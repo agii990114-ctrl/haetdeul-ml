@@ -1,0 +1,78 @@
+======================================================================
+실행 시각  2026-09-01 16:30:25
+명령       python train.py ../../../실험결과/train_clim_20260831.csv --target auc --train-start 2017-01-01 --train-end 2022-12-31 --valid-end 2023-12-31 --seeds 42 43 44 45 46 --gate-lt 3 --fixed-iter 76 --anchor-alpha 0.4 --quantile --quantile-q 배추=0.03,무=0.03,양파=0.02
+작업 폴더  C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2
+======================================================================
+
+[타겟] 경락가  (target_auc_prc / 앵커 auc_prc_lag1)
+[feature] 평년 기온 — 기준일+1~10 (현행)
+[feature] ablation 반영 제외 — 경제 3종 · 학사일정 1종
+          (--keep-all 로 되돌릴 수 있음)
+[품목] 학습 ['배추', '양파', '무']
+[앵커] 수축 α=0.4  0.4×auc_prc_lag1 + 0.60×auc_prc_avg7  → 새 컬럼 _anchor_mix
+====================================================================
+학습   78,119행  2017-01-04 ~ 2022-12-30  (고유 기준일 1,473)
+검증   13,176행  2023-01-02 ~ 2023-12-29  (고유 기준일 245)
+테스트 33,777행  2024-01-02 ~ 2026-08-26  (고유 기준일 645)  [봉인]
+feature 31개 · 타겟 앵커 대비 로그비율
+====================================================================
+
+[주의] 고유 기준일이 1,473개뿐입니다.
+       한 기준일이 리드타임 18행으로 복제되므로 실질 독립 표본은
+       행수가 아니라 기준일 수입니다. 학습이 불안정할 수 있습니다.
+
+[모델]
+  종류        LightGBM 4.7.0 (GBDT)
+  앙상블      시드 5개 [42, 43, 44, 45, 46] · 예측 평균
+  학습 목표   앵커 대비 로그비율  (target_auc_prc / _anchor_mix)
+  앵커        수축 α=0.4  (어제값 40% + 7일평균 60%)
+  트리 수     고정 76그루 (early stopping 미사용)
+  범주형      ['item_nm', 'target_dow', 'prod_area_stn_nm']
+  feature     31개
+  게이트      리드타임 < 3 는 모델 대신 앵커 사용
+
+[하이퍼파라미터]
+  bagging_fraction     0.8
+  bagging_freq         1
+  feature_fraction     0.8
+  lambda_l2            1.0
+  learning_rate        0.03
+  metric               mae
+  min_data_in_leaf     60
+  num_leaves           31
+  objective            regression_l1
+  verbosity            -1
+
+[LightGBM]
+  seed  42: WMAPE 0.1619  (best_iter 76)
+  seed  43: WMAPE 0.1627  (best_iter 76)
+  seed  44: WMAPE 0.1619  (best_iter 76)
+  seed  45: WMAPE 0.1619  (best_iter 76)
+  seed  46: WMAPE 0.1599  (best_iter 76)
+
+  시드별 0.1617 ± 0.0010  (시드 5개)
+
+[Feature Importance 상위 15]
+  whsl_prc_prev_yr                   8.7%
+  holiday_remain_d                   7.2%
+  prod_area_clim_temp_avg10          6.3%
+  _anchor_mix                        5.9%
+  prod_area_stn_nm                   5.9%
+  prod_area_clim_yr_cnt              5.8%
+  whsl_prc_avg14                     5.4%
+  prod_area_gdd_sum30                5.4%
+  rtl_prc_lag1                       4.8%
+  arr_qty_avg7                       4.8%
+  arr_qty_prev_yr                    4.8%
+  prod_area_rain_sum30               4.6%
+  prod_area_temp_avg_lag1            4.2%
+  auc_prc_avg7                       3.6%
+  auc_whsl_ratio_lag1                3.0%
+
+[게이트] LT < 3 는 baseline 으로 대체 (11% 행)
+[밴드] 품목×리드타임 54조합 · 폭 중앙값 57.1% (q10~q90)
+
+[분위수 회귀] 트리 300그루 · 품목별 하한 배추 0.03 · 양파 0.02 · 무 0.03
+
+======================================================================
+종료 시각  2026-09-01 16:30:29

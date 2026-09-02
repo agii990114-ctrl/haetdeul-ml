@@ -1,0 +1,58 @@
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2\band_oos.py:43: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql("SELECT item_nm, lead_biz_d, ratio_q10, ratio_q90 "
+==========================================================================
+[밴드 적중률] 밴드표가 본 적 없는 구간에서 · 목표 80%
+  밴드표 ref_prediction_band 는 2024-01 이후에서 만들어졌습니다
+==========================================================================
+
+  [폴드 A · 잼 2023 · auc] 경락가 · 11,712행 · 기준일 245개
+    품목           행수      적중률      평균폭      평균오차   (8/28 값)
+    배추        3,904    88.1%      93%     24.0%     80.0%
+    무         3,904    95.9%     111%     20.8%     80.4%
+    양파        3,904    92.0%      69%     12.9%     69.7%
+    전체       11,712    92.0%
+
+  [폴드 B · 잼 2022 · auc] 경락가 · 11,696행 · 기준일 246개
+    품목           행수      적중률      평균폭      평균오차   (8/28 값)
+    배추        3,904    86.7%      93%     24.0%     80.0%
+    무         3,904    91.8%     111%     23.6%     80.4%
+    양파        3,888    87.8%      69%     12.7%     69.7%
+    전체       11,696    88.8%
+
+  [폴드 A · 잼 2023 · whsl] 중도매가 · 11,760행 · 기준일 245개
+    품목           행수      적중률      평균폭      평균오차
+    배추        3,920    73.1%      53%     19.0%
+    무         3,920    73.5%      48%     16.9%
+    양파        3,920    69.0%      28%     10.0%
+    전체       11,760    71.8%
+
+  [폴드 B · 잼 2022 · whsl] 중도매가 · 11,808행 · 기준일 246개
+    품목           행수      적중률      평균폭      평균오차
+    배추        3,936    69.7%      53%     23.4%
+    무         3,936    76.1%      48%     17.2%
+    양파        3,936    76.3%      28%     10.1%
+    전체       11,808    74.1%
+
+  [폴드 A · 잼 2023 · rtl] 소매가 · 11,760행 · 기준일 245개
+    품목           행수      적중률      평균폭      평균오차
+    배추        3,920    84.7%      41%     10.8%
+    무         3,920    77.7%      32%     11.2%
+    양파        3,920    90.7%      26%      5.9%
+    전체       11,760    84.3%
+
+  [폴드 B · 잼 2022 · rtl] 소매가 · 11,792행 · 기준일 246개
+    품목           행수      적중률      평균폭      평균오차
+    배추        3,920    77.1%      41%     14.3%
+    무         3,936    85.2%      32%     10.0%
+    양파        3,936    84.6%      26%      6.4%
+    전체       11,792    82.3%

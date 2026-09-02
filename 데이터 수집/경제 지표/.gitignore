@@ -1,0 +1,6 @@
+.env
+__pycache__/
+tests/__pycache__/
+output/*.csv
+output/*.tmp
+*.tmp

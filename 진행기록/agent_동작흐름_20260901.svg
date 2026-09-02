@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1560" width="1240" height="1560" font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif">
+<defs>
+  <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#5B6357"/>
+  </marker>
+  <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#A8443A"/>
+  </marker>
+  <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#3E7C63"/>
+  </marker>
+  <style>
+    .t   { fill:#1B211C; }
+    .sub { fill:#5B6357; font-size:12.5px; }
+    .mono{ font-family:'Consolas','D2Coding',monospace; }
+    .h1  { font-size:26px; font-weight:700; letter-spacing:-.5px; }
+    .h2  { font-size:15px; font-weight:700; }
+    .lbl { font-size:11px; fill:#878E85; letter-spacing:1.2px; }
+    .box { rx:9; ry:9; }
+    .ln  { stroke:#5B6357; stroke-width:1.6; fill:none; marker-end:url(#a); }
+    .lnr { stroke:#A8443A; stroke-width:1.8; fill:none; marker-end:url(#ar); }
+    .lng { stroke:#3E7C63; stroke-width:1.8; fill:none; marker-end:url(#ag); }
+    .dash{ stroke-dasharray:5 4; }
+  </style>
+</defs>
+
+<rect width="1240" height="1560" fill="#FAFAF6"/>
+
+<text x="40" y="52" class="t h1">아침에 자동으로 도는 것 — 전체 흐름</text>
+<text x="40" y="78" class="sub">원가 캣쳐 · 2026-09-01 실측 (Windows 작업 스케줄러 `\원가캣쳐\` 4작업)</text>
+<line x1="40" y1="94" x2="1200" y2="94" stroke="#DEE0D6" stroke-width="1"/>
+
+<!-- ── 스케줄러 ─────────────────────────────────────────── -->
+<text x="40" y="128" class="lbl">1 · 스케줄러가 깨움 — 사람 손 없이</text>
+
+<rect x="40"  y="142" width="270" height="86" class="box" fill="#EFF3EC" stroke="#C6D3C3"/>
+<text x="58" y="170" class="t h2">매일 09:00</text>
+<text x="58" y="192" class="sub mono">일별배치</text>
+<text x="58" y="212" class="sub">batch.bat --skip collect_econ</text>
+
+<rect x="330" y="142" width="270" height="86" class="box" fill="#EFF3EC" stroke="#C6D3C3"/>
+<text x="348" y="170" class="t h2">매일 09:23</text>
+<text x="348" y="192" class="sub mono">일별점검_Claude</text>
+<text x="348" y="212" class="sub">claude_check.bat</text>
+
+<rect x="620" y="142" width="270" height="86" class="box" fill="#F5F3EC" stroke="#D8D2BE"/>
+<text x="638" y="170" class="t h2">매주 월 06:00</text>
+<text x="638" y="192" class="sub mono">주간_경제지표</text>
+<text x="638" y="212" class="sub">--stages collect_econ</text>
+
+<rect x="910" y="142" width="290" height="86" class="box" fill="#F5F3EC" stroke="#D8D2BE"/>
+<text x="928" y="170" class="t h2">매월 1일 08:00</text>
+<text x="928" y="192" class="sub mono">월간_휴업공고</text>
+<text x="928" y="212" class="sub">watch_garak_notice.py</text>
+
+<text x="40" y="252" class="sub">경제 지표는 월 단위로 갱신돼 매일 받을 이유가 없고, 휴업 공고는 아직 안 지나간 날만 확인하면 됩니다.</text>
+
+<!-- ── 배치 11단계 ──────────────────────────────────────── -->
+<text x="40" y="298" class="lbl">2 · 배치가 11단계를 차례로 — 09:00</text>
+
+<rect x="40" y="312" width="1160" height="188" class="box" fill="#FFFFFF" stroke="#DEE0D6"/>
+
+<text x="62" y="342" class="sub" font-weight="700">모으기</text>
+<rect x="62"  y="352" width="118" height="42" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="74" y="371" class="t" font-size="12.5">경락가</text><text x="74" y="387" class="sub" font-size="11">collect_auction</text>
+<rect x="188" y="352" width="118" height="42" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="200" y="371" class="t" font-size="12.5">도·소매가</text><text x="200" y="387" class="sub" font-size="11">collect_price</text>
+<rect x="314" y="352" width="118" height="42" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="326" y="371" class="t" font-size="12.5">기상</text><text x="326" y="387" class="sub" font-size="11">collect_weather</text>
+<rect x="440" y="352" width="118" height="42" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="452" y="371" class="t" font-size="12.5">반입량</text><text x="452" y="387" class="sub" font-size="11">collect_volume</text>
+
+<text x="600" y="342" class="sub" font-weight="700">만들기</text>
+<rect x="600" y="352" width="118" height="42" class="box" fill="#EDF1F5" stroke="#C9D6E0"/>
+<text x="612" y="371" class="t" font-size="12.5">표 재생성</text><text x="612" y="387" class="sub" font-size="11">rebuild (v5)</text>
+<rect x="726" y="352" width="118" height="42" class="box" fill="#EDF1F5" stroke="#C9D6E0"/>
+<text x="738" y="371" class="t" font-size="12.5">추론</text><text x="738" y="387" class="sub" font-size="11">predict · 3타겟</text>
+
+<text x="880" y="342" class="sub" font-weight="700">내보내기</text>
+<rect x="852" y="352" width="112" height="42" class="box" fill="#F1EEF5" stroke="#D6CDE0"/>
+<text x="864" y="371" class="t" font-size="12.5">적재</text><text x="864" y="387" class="sub" font-size="11">load</text>
+<rect x="970" y="352" width="112" height="42" class="box" fill="#F1EEF5" stroke="#D6CDE0"/>
+<text x="982" y="371" class="t" font-size="12.5">채점</text><text x="982" y="387" class="sub" font-size="11">score</text>
+<rect x="1088" y="352" width="94" height="42" class="box" fill="#F1EEF5" stroke="#D6CDE0"/>
+<text x="1100" y="371" class="t" font-size="12.5">전달</text><text x="1100" y="387" class="sub" font-size="11">push</text>
+
+<rect x="726" y="410" width="118" height="40" class="box" fill="#FFF8E8" stroke="#E3D2A6" stroke-dasharray="4 3"/>
+<text x="738" y="428" class="t" font-size="12.5">shadow</text><text x="738" y="443" class="sub" font-size="10.5">분위수 나란히</text>
+<path d="M785,394 L785,410" class="ln"/>
+<text x="856" y="428" class="sub" font-size="11.5">★ 새 방식(분위수 회귀)을 옆에서 같이 돌려 비교만 합니다.</text>
+<text x="856" y="444" class="sub" font-size="11.5">   <tspan font-weight="700">적재는 안 합니다</tspan> — 실험 기록이 운영 기록과 섞이면 안 되기 때문입니다.</text>
+
+<text x="62" y="482" class="sub">한 단계라도 실패하면 <tspan font-weight="700" fill="#A8443A">거기서 멈춥니다.</tspan> 뒤 단계는 안 돕니다 — 반쯤 만든 자료가 나가는 것보다 낫습니다.</text>
+
+<!-- 갈림 -->
+<path d="M400,500 L400,540" class="lng"/>
+<path d="M840,500 L840,540" class="lnr"/>
+<text x="412" y="524" class="t" font-size="13" fill="#3E7C63" font-weight="700">성공</text>
+<text x="852" y="524" class="t" font-size="13" fill="#A8443A" font-weight="700">실패</text>
+
+<!-- ── 실패 경로 ────────────────────────────────────────── -->
+<text x="40" y="574" class="lbl">3 · 실패했을 때 — 배치가 스스로 도우미를 부름</text>
+
+<rect x="640" y="590" width="560" height="150" class="box" fill="#FBF0EC" stroke="#E4C5BC"/>
+<text x="662" y="618" class="t h2" fill="#8C4235">배치 장애 조사 도우미</text>
+<text x="662" y="640" class="sub mono">agent/batch_agent.py</text>
+<text x="662" y="664" class="sub">실행 기록 · 단계별 오류 원문 · 로그 · 알림 파일 · 원천 최신일을 읽습니다.</text>
+<text x="662" y="682" class="sub">며칠째 연속 실패인지, 일시적인지 구조적인지 가려 <tspan font-weight="700">ALERT.txt 에 덧붙입니다.</tspan></text>
+<text x="662" y="706" class="sub" fill="#8C4235">★ 도우미가 죽어도 배치 결과는 안 바뀝니다. 5분 넘으면 스스로 그만둡니다.</text>
+<text x="662" y="726" class="sub" fill="#8C4235">★ 고치지 않습니다 — 표를 비우는 단계가 있어 재실행이 위험합니다.</text>
+
+<path d="M840,540 L840,590" class="lnr"/>
+
+<rect x="640" y="762" width="560" height="58" class="box" fill="#FFFFFF" stroke="#DEE0D6"/>
+<text x="662" y="786" class="t" font-size="13" font-weight="700">사람에게 알림 3가지</text>
+<text x="662" y="806" class="sub">ALERT.txt · 배치 로그 · 화면(localhost:3100) — 하나라도 눈에 띄면 됩니다</text>
+<path d="M920,740 L920,762" class="lnr"/>
+
+<!-- ── 성공 경로 ────────────────────────────────────────── -->
+<text x="40" y="574" class="lbl" opacity="0"> </text>
+<rect x="40" y="590" width="560" height="150" class="box" fill="#EDF4EF" stroke="#BEDBC9"/>
+<text x="62" y="618" class="t h2" fill="#2F6B52">잘 돌면 — 아무 말도 안 합니다</text>
+<text x="62" y="642" class="sub">예측이 매입 파트 DB 로 넘어가고 끝납니다.</text>
+<text x="62" y="662" class="sub">알림 파일도 지웁니다 (성공했는데 “실패 중” 으로 보이면 안 되니까요).</text>
+<text x="62" y="690" class="sub" fill="#2F6B52">★ 조용할 때 조용해야 진짜 신호가 눈에 띕니다.</text>
+<text x="62" y="712" class="sub">거짓 경보가 매일 뜨면 사람이 무시하게 되고, 그러면 진짜 이상도 같이 묻힙니다.</text>
+
+<!-- ── 09:23 점검 ───────────────────────────────────────── -->
+<text x="40" y="862" class="lbl">4 · 23분 뒤 — 성공했든 실패했든 다시 확인</text>
+
+<rect x="40" y="878" width="1160" height="238" class="box" fill="#FFFFFF" stroke="#DEE0D6"/>
+<text x="62" y="908" class="t h2">일별점검_Claude  <tspan class="sub mono" font-weight="400">ops/claude_check.bat · 09:23</tspan></text>
+<text x="62" y="930" class="sub">Claude 를 창 없이 한 번 실행합니다(<tspan class="mono">claude --print</tspan>). 대화창이 꺼져 있어도 돕니다.</text>
+
+<rect x="62"  y="948" width="352" height="118" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="80" y="972" class="t" font-size="13" font-weight="700">① 배치 결과를 읽는다</text>
+<text x="80" y="992" class="sub mono" font-size="11">agent/batch_agent.py</text>
+<text x="80" y="1014" class="sub">실패했으면 어느 단계·몇 번째 연속·오류 원문을</text>
+<text x="80" y="1032" class="sub">적고 로그와 최근 코드 변경을 뒤져 원인을 찾습니다.</text>
+<text x="80" y="1054" class="sub" fill="#8C4235">고치지는 않습니다.</text>
+
+<rect x="434" y="948" width="352" height="118" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="452" y="972" class="t" font-size="13" font-weight="700">② 데이터가 이상한지 본다</text>
+<text x="452" y="992" class="sub mono" font-size="11">agent/quality_agent.py --days 180</text>
+<text x="452" y="1014" class="sub">등급 순서 · 하루 안 가격 차이 · 어제-오늘 연결 ·</text>
+<text x="452" y="1032" class="sub">정답-출발점 짝. <tspan font-weight="700">넷 다 우리가 겪은 사고입니다.</tspan></text>
+<text x="452" y="1054" class="sub" fill="#2F6B52">정상이면 “데이터 품질: 정상” 한 줄만.</text>
+
+<rect x="806" y="948" width="376" height="118" class="box" fill="#F3F4EE" stroke="#DEE0D6"/>
+<text x="824" y="972" class="t" font-size="13" font-weight="700">③ 전달표에 오늘이 들어갔나</text>
+<text x="824" y="994" class="sub">매입 파트가 보는 표에 오늘 기준일이</text>
+<text x="824" y="1012" class="sub">있는지 확인합니다. 배치가 “성공” 이라고</text>
+<text x="824" y="1030" class="sub">해도 저쪽에 안 갔을 수 있습니다.</text>
+<text x="824" y="1054" class="sub">결과 →<tspan class="mono" font-size="11"> 진행기록/agent_logs/(날짜)_claude_check.md</tspan></text>
+
+<text x="62" y="1096" class="sub"><tspan font-weight="700">★ 이 파일이 안 생기면 배치가 “점검 실패” 로 봅니다.</tspan> 로그인이 끊기면 파일이 안 생기므로, 그것 자체가 신호가 됩니다.</text>
+
+<path d="M320,740 L320,878" class="lng dash"/>
+<path d="M920,820 L920,878" class="lnr dash"/>
+
+<!-- ── 세 번째 도우미 ───────────────────────────────────── -->
+<text x="40" y="1162" class="lbl">5 · 세 번째 도우미 — 사람이 물어볼 때만</text>
+
+<rect x="40" y="1178" width="1160" height="112" class="box" fill="#F5F3F9" stroke="#D6CDE0"/>
+<text x="62" y="1206" class="t h2">예측 설명 도우미  <tspan class="sub mono" font-weight="400">agent/forecast_agent.py</tspan></text>
+<text x="62" y="1230" class="sub">화면(localhost:3100)에서 예측값을 누르면 <tspan font-weight="700">“왜 그렇게 봤나”</tspan> 를 설명합니다. 자동으로 안 돕니다.</text>
+<text x="62" y="1252" class="sub">근거는 전부 이미 측정된 값입니다 — 모델이 중시하는 것 · 그날 실제 입력값 · 그 조합의 지난 오차. <tspan font-weight="700">지어내지 않습니다.</tspan></text>
+<text x="62" y="1274" class="sub">출발점이 어느 날 값에서 왔는지도 <tspan font-weight="700">값을 맞춰 찾습니다</tspan> — 달력으로 날짜를 계산하면 휴장일에 어긋납니다.</text>
+
+<!-- ── 원칙 ─────────────────────────────────────────────── -->
+<text x="40" y="1336" class="lbl">6 · 세 도우미의 공통 원칙</text>
+
+<rect x="40" y="1352" width="1160" height="164" class="box" fill="#FFFFFF" stroke="#DEE0D6"/>
+<text x="62" y="1382" class="t h2">판단은 규칙이, 설명은 도우미가</text>
+
+<text x="62" y="1412" class="t" font-size="13" font-weight="700">① 날짜 두 개 비교하는 데 AI 를 쓸 이유가 없습니다.</text>
+<text x="78" y="1432" class="sub">코드 세 줄이면 되고 매번 같은 답이 나옵니다. AI 는 그 위에 사람 말로 요약을 얹을 뿐입니다.</text>
+
+<text x="62" y="1460" class="t" font-size="13" font-weight="700">② 가장 위험한 것 — 도우미가 조용히 죽으면 “이상 없음” 처럼 보입니다.</text>
+<text x="78" y="1480" class="sub">그래서 <tspan font-weight="700">모든 검사는 AI 없이 끝까지 돕니다.</tspan> AI 가 없어도 보고서는 그대로 나옵니다.</text>
+
+<text x="62" y="1504" class="t" font-size="13" font-weight="700">③ 도우미에게 고치게 하지 않습니다.</text>
+<text x="410" y="1504" class="sub">표를 통째로 비우고 다시 채우는 단계가 있어, 재실행하면 자료가 날아갈 수 있습니다.</text>
+</svg>

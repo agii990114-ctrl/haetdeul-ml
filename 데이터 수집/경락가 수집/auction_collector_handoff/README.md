@@ -1,0 +1,60 @@
+# 경매가 증분 수집 도구
+
+2015–2025년 기준 데이터 이후의 배추·무·양파·건고추·마늘 경매가를 공공데이터포털 API에서 받아 같은 16개 컬럼으로 누적합니다.
+
+Windows 팀원은 [WINDOWS_SETUP_GUIDE.md](WINDOWS_SETUP_GUIDE.md)를 먼저 따라 하세요. Python 설치부터 DBeaver 초기 적재, 증분 실행과 오류 확인까지 Windows 기준으로 설명합니다.
+
+## 준비
+
+Python 3.11 이상이 필요합니다. API 수집과 CSV 생성은 추가 패키지 없이 실행됩니다.
+
+공공데이터포털에서 `전국 공영도매시장 경매원천정보`를 필수로 활용신청하고, 코드 확인과 향후 품목 확장을 위해 `농축수산물 표준코드`도 함께 신청하는 것을 권장합니다. 자세한 신청 순서는 Windows 설명서를 참고하세요.
+
+```bash
+cp .env.example .env
+# .env에 DATA_GO_KR_SERVICE_KEY 입력
+```
+
+PostgreSQL 직접 적재가 필요하면 다음과 같이 선택 의존성을 설치합니다.
+
+```bash
+python -m pip install -e '.[postgres]'
+```
+
+## 명령
+
+```bash
+# 기존 CSV의 마지막 날짜 다음 날부터 어제까지 수집
+python -m auction_collector update
+
+# 지정 기간만 별도 파일로 수집
+python -m auction_collector collect --start 2026-01-01 --end 2026-01-31
+
+# 기존 기간을 다시 받아 현재 파일에서 해당 기간 교체
+python -m auction_collector collect --start 2026-01-01 --end 2026-01-31 \
+  --replace-range --base-csv outputs/auction_prices_current_db.csv
+
+# CSV 검증
+python -m auction_collector validate outputs/auction_prices_current_db.csv
+
+# PostgreSQL에도 적재
+python -m auction_collector update --load-postgres
+```
+
+`update`는 다음 두 파일을 함께 만듭니다.
+
+- `auction_prices_current_db.csv`: UTF-8 무BOM, DB 적재용
+- `auction_prices_current_excel.csv`: UTF-8 BOM, Excel 확인용
+
+두 파일은 BOM을 제외하면 내용이 완전히 같습니다. Excel에서는 반드시 `_excel.csv` 파일을 여세요.
+
+일자별 수집 결과는 `work/auction_collector_cache`에 원자적으로 저장됩니다. 중단 후 같은 명령을 다시 실행하면 완료된 날짜는 API를 다시 호출하지 않습니다. 일요일은 기본적으로 제외하며, 확인이 필요하면 `--include-sundays`를 사용합니다.
+
+## 품목 설정 확장
+
+기본 5개 품목 외 항목을 추가하려면 `config/items.example.json`을 복사해 수정하고 `--items-config`로 지정합니다. 기본 5개 품목은 3회/일의 최적화된 API 질의를 사용하며, 사용자 설정은 품목별 질의를 사용합니다.
+
+## 출처 정책
+
+- 기준 데이터의 2015년: 농림축산식품 공공데이터포털 MAFRA API
+- 기준 데이터의 2016년 이후 및 신규 수집: data.go.kr `전국 공영도매시장 경매원천정보`

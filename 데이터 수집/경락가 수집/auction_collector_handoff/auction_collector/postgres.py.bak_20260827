@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from .constants import CSV_HEADERS
+from .csvio import ValidationResult
+
+
+TABLE_NAME = "auction_prices_daily"
+CONSTRAINT_NAME = "auction_prices_daily_natural_key_v2_uq"
+
+
+def schema_sql() -> str:
+    return f"""-- PostgreSQL 15+ 기준
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  auction_date date NOT NULL,
+  market_category varchar(10) NOT NULL,
+  wholesale_market_code varchar(20) NOT NULL,
+  wholesale_market_name varchar(100) NOT NULL,
+  item_code varchar(20) NOT NULL,
+  item_name varchar(50) NOT NULL,
+  grade_code varchar(20),
+  grade_name varchar(50) NOT NULL,
+  avg_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  min_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  max_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  trade_volume_kg numeric(28,6) NOT NULL,
+  trade_amount_krw numeric(28,6) NOT NULL,
+  package_trade_quantity numeric(28,6) NOT NULL,
+  source_trade_count bigint NOT NULL,
+  source varchar(200) NOT NULL
+);
+
+DROP INDEX IF EXISTS auction_prices_daily_natural_key_uq;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{CONSTRAINT_NAME}') THEN
+    ALTER TABLE {TABLE_NAME}
+      ADD CONSTRAINT {CONSTRAINT_NAME}
+      UNIQUE NULLS NOT DISTINCT
+      (auction_date, wholesale_market_code, item_code, grade_code, grade_name);
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS auction_prices_daily_item_date_idx
+  ON {TABLE_NAME} (item_code, auction_date);
+CREATE INDEX IF NOT EXISTS auction_prices_daily_market_date_idx
+  ON {TABLE_NAME} (wholesale_market_code, auction_date);
+CREATE INDEX IF NOT EXISTS auction_prices_daily_grade_idx
+  ON {TABLE_NAME} (grade_code);
+
+COMMENT ON TABLE {TABLE_NAME} IS '건고추·양파·배추·무·마늘 일별 도매시장 등급별 경매 낙찰 집계';
+COMMENT ON COLUMN {TABLE_NAME}.grade_code IS '원천에서 미상인 경우 NULL';
+
+COMMIT;
+"""
+
+
+def _create_table_sql() -> str:
+    return schema_sql().replace("BEGIN;", "", 1).replace("\nCOMMIT;\n", "\n", 1)
+
+
+def load_postgres(database_url: str, csv_path: Path, validation: ValidationResult) -> dict[str, object]:
+    try:
+        import psycopg
+    except ImportError as error:
+        raise RuntimeError("PostgreSQL 적재에는 `python -m pip install -e '.[postgres]'`가 필요합니다.") from error
+
+    column_sql = ", ".join(CSV_HEADERS)
+    create_stage = """
+CREATE TEMP TABLE auction_prices_stage (
+  auction_date date NOT NULL,
+  market_category varchar(10) NOT NULL,
+  wholesale_market_code varchar(20) NOT NULL,
+  wholesale_market_name varchar(100) NOT NULL,
+  item_code varchar(20) NOT NULL,
+  item_name varchar(50) NOT NULL,
+  grade_code varchar(20),
+  grade_name varchar(50) NOT NULL,
+  avg_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  min_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  max_auction_price_krw_per_kg numeric(28,6) NOT NULL,
+  trade_volume_kg numeric(28,6) NOT NULL,
+  trade_amount_krw numeric(28,6) NOT NULL,
+  package_trade_quantity numeric(28,6) NOT NULL,
+  source_trade_count bigint NOT NULL,
+  source varchar(200) NOT NULL
+) ON COMMIT DROP;
+"""
+    updates = ",\n".join(
+        f"  {column} = EXCLUDED.{column}"
+        for column in CSV_HEADERS
+        if column not in {"auction_date", "wholesale_market_code", "item_code", "grade_code", "grade_name"}
+    )
+    upsert = f"""
+INSERT INTO {TABLE_NAME} ({column_sql})
+SELECT {column_sql} FROM auction_prices_stage
+ON CONFLICT ON CONSTRAINT {CONSTRAINT_NAME} DO UPDATE SET
+{updates};
+"""
+
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(_create_table_sql())
+            cursor.execute(create_stage)
+            copy_sql = f"COPY auction_prices_stage ({column_sql}) FROM STDIN WITH (FORMAT CSV, HEADER TRUE, NULL '', ENCODING 'UTF8')"
+            with cursor.copy(copy_sql) as copy:
+                with csv_path.open("r", encoding="utf-8", newline="") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), ""):
+                        copy.write(chunk)
+            cursor.execute("SELECT COUNT(*), MIN(auction_date), MAX(auction_date) FROM auction_prices_stage")
+            count, min_date, max_date = cursor.fetchone()
+            if int(count) != validation.row_count:
+                raise RuntimeError(f"staging 행 수 불일치: expected={validation.row_count}, actual={count}")
+            cursor.execute(
+                """
+SELECT COUNT(*) FROM (
+  SELECT auction_date, wholesale_market_code, item_code, grade_code, grade_name
+  FROM auction_prices_stage
+  GROUP BY auction_date, wholesale_market_code, item_code, grade_code, grade_name
+  HAVING COUNT(*) > 1
+) duplicated
+"""
+            )
+            duplicate_groups = int(cursor.fetchone()[0])
+            if duplicate_groups:
+                raise RuntimeError(f"staging 자연키 중복: {duplicate_groups}개 그룹")
+            cursor.execute(upsert)
+            affected = cursor.rowcount
+        connection.commit()
+    return {
+        "loadedRows": validation.row_count,
+        "affectedRows": affected,
+        "minDate": min_date.isoformat() if min_date else None,
+        "maxDate": max_date.isoformat() if max_date else None,
+    }
+

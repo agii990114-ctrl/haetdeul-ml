@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * 디자인 토큰 — mainproject 화면과 같은 색을 쓴다.
+ *
+ * 같은 회사 화면이 둘로 갈리면 보는 사람이 "다른 시스템" 으로 읽는다.
+ * 무청 초록을 강조색으로 두고, 중립색에 살짝 녹색을 섞었다.
+ * ------------------------------------------------------------------------- */
+@theme {
+  --color-ink: #151a16;
+  --color-paper: #fbfbf9;
+  --color-surface: #ffffff;
+  --color-sunk: #f4f5f1;
+  --color-line: #e3e6df;
+  --color-line-soft: #eff1ec;
+  --color-muted: #6c746d;
+  --color-faint: #9aa29b;
+
+  --color-accent: #2f6b45;
+  --color-accent-ink: #1e4a2e;
+  --color-accent-wash: #e8f0e7;
+
+  --color-warn: #a34a2a;
+  --color-warn-wash: #f8ece6;
+  --color-gold: #9a6f14;
+  --color-gold-wash: #f7f0dc;
+  --color-sky: #2c5a78;
+  --color-sky-wash: #e6eef3;
+
+  --font-sans: var(--font-plex-sans), -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-plex-mono), "SFMono-Regular", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 수치가 세로로 줄 맞게 — 가격이 표로 서는 화면이다 */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

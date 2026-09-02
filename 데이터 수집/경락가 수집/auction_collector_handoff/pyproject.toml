@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auction-price-collector"
+version = "0.1.0"
+description = "공영도매시장 5개 품목 경매가 증분 수집 및 DB 적재 도구"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
+[project.scripts]
+auction-collector = "auction_collector.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["auction_collector*"]
+

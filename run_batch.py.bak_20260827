@@ -1,0 +1,385 @@
+# -*- coding: utf-8 -*-
+"""
+원가 캣쳐 — 일별 배치
+======================
+수집 → 재생성 → 추론 → 적재 → 채점을 순서대로 돌린다.
+어느 단계든 실패하면 **거기서 멈춘다.** 반쯤 돌린 상태로 예측을 내보내지 않는다.
+
+    python run_batch.py --dry-run            # 무엇을 돌릴지만 보여준다
+    python run_batch.py                      # 전체 (수집은 오래 걸린다)
+    python run_batch.py --stages rebuild,predict,load,score
+    python run_batch.py --skip collect_volume,collect_weather
+
+단계
+----
+    collect_*   수집 5종. 각각 독립이라 하나가 실패해도 나머지는 돈다
+                (단 --strict 를 주면 하나라도 실패 시 중단)
+    rebuild     DBEAVER_run_v5.sql — crop_price_train + predict_input 재생성
+    predict     predict_input 최신 기준일로 3타겟 추론
+    load        예측 → prediction_log
+    score       대상일 지난 예측에 실제값 채우기
+
+매일은 추론만 한다
+------------------
+학습은 이 배치에 없다. 월 1회 또는 드리프트 감지 시 사람이 돌린다.
+매일 학습하면 예측이 요동쳐 "왜 어제와 다르냐" 에 답할 수 없다.
+
+신선도 가드
+-----------
+추론 전에 앵커가 얼마나 낡았는지 잰다. 임계를 넘으면 **예측을 만들지 않는다.**
+몇 달 전 가격으로 "오늘의 예측" 을 내놓는 것이 가장 나쁜 사고이고,
+그건 예외가 아니라 그럴듯한 숫자로 나온다.
+
+임계는 **달력상 마지막 조사일** 기준이다. 달력일로 재면 주말·연휴마다 오탐이 난다.
+"""
+import argparse
+import datetime
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+PY = sys.executable
+KIT = ROOT / "ML" / "20260824" / "ml_train_kit_2"
+COL = ROOT / "데이터 수집"
+LOGDIR = ROOT / "진행기록" / "batch_logs"
+
+# 운영에 쓸 모델 번들. 바꾸려면 여기만 고친다.
+MODELS = {"auc": "ops_auc", "whsl": "ops_whsl", "rtl": "ops_rtl"}
+
+# 앵커가 조사일 기준 며칠 이상 밀리면 추론을 멈출지
+MAX_SURVEY_LAG = 3
+
+
+def dsn():
+    for raw in (ROOT / ".env").read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            os.environ.setdefault(k.strip(), v)
+    u = os.environ.get("DATABASE_URL")
+    if not u:
+        sys.exit(".env 에 DATABASE_URL 이 없습니다.")
+    return u
+
+
+# ── 단계 정의 ────────────────────────────────────────────────────────
+#   (이름, 설명, 작업디렉터리, 명령)
+STAGES = [
+    ("collect_auction", "경락가 증분 수집 + 적재",
+     COL / "경락가 수집" / "auction_collector_handoff",
+     [PY, "-m", "auction_collector", "update", "--load-postgres"]),
+    ("collect_price", "도·소매 증분 수집 + 적재",
+     COL / "중도매, 소매가", [PY, "collect_kamis.py"]),
+    ("collect_weather", "기상 ASOS 수집",
+     COL / "기상데이터", None),          # 기간이 동적이라 아래에서 만든다
+    ("collect_volume", "반입량 스크래핑 (느림 · 20~25분)",
+     COL / "일일 산출량", None),
+    ("collect_econ", "경제변수 수집 + 적재",
+     COL / "경제 지표", None),
+    ("rebuild", "v5 재생성 (crop_price_train + predict_input)", ROOT, None),
+    ("predict", "3타겟 추론", KIT, None),
+    ("load", "예측 → prediction_log", KIT, None),
+    ("score", "실제값 채점", KIT, None),
+]
+NAMES = [s[0] for s in STAGES]
+
+
+def run(cmd, cwd, log, timeout=None):
+    """한 명령을 돌리고 (성공여부, 마지막 출력) 반환."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, cwd=str(cwd), env=env, timeout=timeout,
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        log.write("!! 시간 초과 (%s초)\n" % timeout)
+        return False, "시간 초과"
+    out = (p.stdout or "") + (p.stderr or "")
+    log.write(out)
+    log.flush()
+    tail = "\n".join(l for l in out.strip().split("\n")[-4:] if l.strip())
+    return p.returncode == 0, tail + ("\n  (%.0f초)" % (time.time() - t0))
+
+
+def run_begin(conn, plan):
+    """실행 시작을 batch_run 에 남기고 run_id 를 돌려준다.
+
+    자동 실행을 걸면 사람이 로그 파일을 안 본다. DB 에 있어야 대시보드가 보고,
+    "어제 돌았나" 를 이력으로 답할 수 있다.
+    """
+    import socket
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO batch_run (host, stages_plan) VALUES (%s, %s) "
+                        "RETURNING run_id", (socket.gethostname(), ",".join(plan)))
+            rid = cur.fetchone()[0]
+        conn.commit()
+        return rid
+    except Exception as e:                                   # noqa: BLE001
+        # 기록 실패가 배치를 멈추면 안 된다. 배치가 본업이다.
+        conn.rollback()
+        print("  [주의] batch_run 기록 실패 — 배치는 계속합니다: %s" % str(e)[:120])
+        return None
+
+
+def stage_log(conn, rid, seq, stage, ok, secs, msg):
+    if rid is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO batch_run_stage "
+                        "(run_id, seq, stage, ok, duration_s, message) "
+                        "VALUES (%s,%s,%s,%s,%s,%s)",
+                        (rid, seq, stage, ok, round(secs, 1), (msg or "")[:2000]))
+        conn.commit()
+    except Exception:                                        # noqa: BLE001
+        conn.rollback()
+
+
+def run_end(conn, rid, done, failed, stopped):
+    if rid is None:
+        return
+    st = "fail" if stopped else ("partial" if failed else "ok")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE batch_run SET finished_at=now(), status=%s, "
+                        "n_ok=%s, n_fail=%s, note=%s WHERE run_id=%s",
+                        (st, len(done), len(failed),
+                         ("실패: " + ",".join(failed)) if failed else None, rid))
+        conn.commit()
+    except Exception:                                        # noqa: BLE001
+        conn.rollback()
+
+
+def survey_lag(conn):
+    """달력상 마지막 조사일 대비 앵커가 며칠 밀렸나.
+
+    달력일로 재면 주말·연휴마다 오탐이 난다. 조사가 열린 날 기준으로 센다.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT MAX(exmn_ymd) FROM veg_daily_price_raw
+            WHERE se_cd='02' AND grd_cd='04' AND mrkt_nm='가락도매'
+              AND item_nm IN ('배추','양파','무')""")
+        last_data = cur.fetchone()[0]
+        cur.execute("""SELECT COUNT(*) FROM ref_calendar
+                       WHERE is_survey AND dt > %s AND dt <= CURRENT_DATE""",
+                    (last_data,))
+        return last_data, cur.fetchone()[0]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--stages", help="쉼표로 구분. 기본 전체")
+    ap.add_argument("--skip", help="건너뛸 단계")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--strict", action="store_true",
+                    help="수집 단계 하나라도 실패하면 중단 (기본은 계속)")
+    ap.add_argument("--max-survey-lag", type=int, default=MAX_SURVEY_LAG)
+    ap.add_argument("--force-stale", action="store_true",
+                    help="앵커가 낡아도 추론한다. 결과를 오늘 값으로 쓰지 말 것")
+    a = ap.parse_args()
+
+    want = [s.strip() for s in a.stages.split(",")] if a.stages else list(NAMES)
+    skip = {s.strip() for s in a.skip.split(",")} if a.skip else set()
+    bad = [s for s in want if s not in NAMES]
+    if bad:
+        sys.exit("모르는 단계: %s\n  가능: %s" % (bad, ", ".join(NAMES)))
+    plan = [s for s in want if s not in skip]
+
+    today = datetime.date.today()
+    LOGDIR.mkdir(parents=True, exist_ok=True)
+    logpath = LOGDIR / ("batch_%s.log" % today.isoformat())
+
+    print("=" * 70)
+    print(" 원가 캣쳐 일별 배치 · %s" % today)
+    print("=" * 70)
+    for name, desc, cwd, _ in STAGES:
+        mark = "▶" if name in plan else "·"
+        print("  %s %-18s %s" % (mark, name, desc))
+    print("  로그: %s" % logpath)
+    if a.dry_run:
+        print("\n--dry-run 이므로 실행하지 않았습니다.")
+        return
+
+    import psycopg
+    conn = psycopg.connect(dsn(), connect_timeout=25)
+
+    # 수집 기간은 DB 최신일에서 자동으로 정한다.
+    #   날짜를 하드코딩하지 않는다 — v5 의 '2025-12-31' 하드코딩 때문에
+    #   RAW 8개월치가 조용히 버려진 적이 있다 (2026-08-25).
+    with conn.cursor() as cur:
+        cur.execute('SELECT MAX("tm")::date FROM weather_asos_raw')
+        wx_from = cur.fetchone()[0] + datetime.timedelta(days=1)
+        cur.execute("SELECT MAX(base_date) FROM daily_volume")
+        vol_from = cur.fetchone()[0] - datetime.timedelta(days=5)   # 8일 창이 겹치게
+        # 경제변수는 ECOS 수정 후 시계열이라 과거가 정정될 수 있다. 90일 겹쳐 받아
+        # 정정을 반영하되, 매번 11년치를 다시 받지는 않는다 (기본값이 2015-01-01).
+        #   증분이 전체본과 값이 같은지 확인함(2026-08-25, 91행 불일치 0).
+        #   도구가 시작일 이전 데이터를 참조해 전년동월비·직전값 전달을 계산한다.
+        cur.execute("SELECT MAX(dt)::date FROM econ_daily_raw")
+        e = cur.fetchone()[0]
+        econ_from = (e - datetime.timedelta(days=90)) if e else datetime.date(2015, 1, 1)
+
+    dyn = {
+        # 수집기가 DB 에 바로 넣는다. CSV 는 만들지 않는다.
+        #   CSV 는 타입을 지우고(빈문자열 vs NULL · 실수 vs 정수) 로더가 그걸
+        #   손으로 복원해야 한다. 복원 규칙이 갈라지면 조용히 틀린다.
+        "collect_weather": [PY, "fetch_asos.py",
+                            wx_from.strftime("%Y%m%d"),
+                            (today - datetime.timedelta(days=1)).strftime("%Y%m%d"),
+                            "--load-db", "--no-csv"],
+        "collect_volume": [PY, "농넷에서 일일산출량 적재.py", "run",
+                           "--start", vol_from.isoformat(),
+                           "--end", today.isoformat(),
+                           "--load-db", "--no-csv"],
+        # 증분본은 따로 쓴다. 기본 출력(output/economic_variables_daily.csv)은
+        # 전 구간본이라 90일치로 덮어쓰면 안 된다.
+        "collect_econ": [PY, "fetch_economic_variables.py",
+                         "--start-date", econ_from.isoformat(),
+                         "--load-db", "--no-csv"],
+        "rebuild": None, "predict": None, "load": None, "score": None,
+    }
+    # 수집 뒤 별도 적재 — 이제 수집기가 직접 넣으므로 비어 있다.
+    #   load_to_pg.py · load_daily_volume.py 는 남겨뒀다. 이미 받아둔 CSV 를
+    #   넣거나 과거분을 복구할 때 쓴다.
+    after = {}
+
+    failed, done = [], []
+    rid = run_begin(conn, plan)
+    if rid:
+        print("  실행 id: %d" % rid)
+    seq = 0
+    stopped = False
+    log = open(logpath, "a", encoding="utf-8")
+    log.write("\n\n%s\n배치 시작 %s\n%s\n" % ("=" * 70, datetime.datetime.now(), "=" * 70))
+
+    for name, desc, cwd, cmd in STAGES:
+        if name not in plan:
+            continue
+        print("\n[%s] %s" % (name, desc))
+        log.write("\n---- %s ----\n" % name)
+        t_stage = time.time()
+
+        if name == "rebuild":
+            ok, tail = do_rebuild(conn, log)
+        elif name in ("predict", "load", "score"):
+            ok, tail = do_ml(name, conn, log, a, today)
+        elif name == "collect_weather" and wx_from > today - datetime.timedelta(days=1):
+            # ASOS 는 전일(D-1)까지만 제공한다. 이미 받아뒀으면 받을 게 없다.
+            # fetch_asos.py 는 이 경우 오류로 끝나는데(수동 실행에서는 맞는 동작),
+            # 배치에서는 실패가 아니라 "할 일 없음" 이다.
+            ok, tail = True, "이미 최신 (DB %s · 제공 한계 %s)" % (
+                wx_from - datetime.timedelta(days=1), today - datetime.timedelta(days=1))
+        else:
+            c = cmd or dyn[name]
+            ok, tail = run(c, cwd, log, timeout=3600)
+            if ok and name in after:
+                steps = after[name]
+                steps = steps if isinstance(steps[0], list) else [steps]
+                for st in steps:
+                    ok, tail = run(st, cwd, log, timeout=1800)
+                    if not ok:
+                        break
+
+        print("  %s" % ("성공" if ok else "실패"))
+        for line in tail.split("\n"):
+            print("    " + line)
+        (done if ok else failed).append(name)
+        seq += 1
+        stage_log(conn, rid, seq, name, ok, time.time() - t_stage, tail)
+
+        if not ok:
+            if name.startswith("collect_") and not a.strict:
+                print("  → 수집 단계는 계속 진행합니다 (--strict 로 중단 가능)")
+                continue
+            print("\n중단합니다. 이후 단계는 돌리지 않습니다.")
+            stopped = True
+            break
+
+    run_end(conn, rid, done, failed, stopped)
+    log.close()
+    conn.close()
+    print("\n" + "=" * 70)
+    print(" 성공 %d · 실패 %d" % (len(done), len(failed)))
+    if failed:
+        print(" 실패: %s" % ", ".join(failed))
+        print(" 로그: %s" % logpath)
+        sys.exit(1)
+
+
+def do_rebuild(conn, log):
+    """v5 를 트랜잭션 안에서 돌리고, 성공했을 때만 커밋한다."""
+    sql = (ROOT / "SQL" / "DBEAVER_run_v5.sql").read_text(encoding="utf-8")
+    notices = []
+    conn.add_notice_handler(lambda d: notices.append(d.message_primary))
+    t0 = time.time()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            while cur.nextset():
+                pass
+        conn.commit()
+    except Exception as e:                                   # noqa: BLE001
+        conn.rollback()
+        log.write("v5 실패: %s\n" % e)
+        return False, "v5 실패 — 롤백했습니다: %s" % str(e)[:200]
+    keep = [m for m in notices
+            if "already exists" not in m and "does not exist" not in m]
+    for m in keep:
+        log.write("  " + m + "\n")
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*), MAX(base_dt) FROM crop_price_train")
+        n, mx = cur.fetchone()
+        cur.execute("SELECT COUNT(*), MAX(base_dt) FROM predict_input")
+        pn, pmx = cur.fetchone()
+    return True, ("crop_price_train %s행 · ~%s\npredict_input %s행 · ~%s\n  (%.0f초)"
+                  % (format(n, ","), mx, format(pn, ","), pmx, time.time() - t0))
+
+
+def do_ml(name, conn, log, a, today):
+    """추론·적재·채점. predict 전에 신선도를 재고, 낡으면 멈춘다."""
+    out = ROOT / "진행기록" / "batch_logs"
+    if name == "predict":
+        last, lag = survey_lag(conn)
+        msg = "앵커 최신 조사일 %s · 조사일 기준 %d일 밀림" % (last, lag)
+        log.write(msg + "\n")
+        if lag > a.max_survey_lag and not a.force_stale:
+            return False, (msg + "\n임계 %d일을 넘어 추론하지 않습니다.\n"
+                           "  수집을 먼저 돌리세요. 그래도 내려면 --force-stale"
+                           % a.max_survey_lag)
+        with conn.cursor() as cur:
+            cur.execute("SELECT MAX(base_dt) FROM predict_input")
+            base = cur.fetchone()[0]
+        tails = []
+        for kind, mdir in MODELS.items():
+            csv = out / ("pi_%s.csv" % kind)
+            ok, t = run([PY, "export_predict_input.py", "--base-dt", str(base),
+                         "--out", str(csv)], KIT, log, timeout=600)
+            if not ok:
+                return False, "predict_input 내보내기 실패\n" + t
+            ok, t = run([PY, "predict.py", str(csv), "--model-dir", mdir,
+                         "--model-ver", mdir,
+                         "--out", str(out / ("pred_%s.csv" % kind))],
+                        KIT, log, timeout=900)
+            if not ok:
+                return False, "%s 추론 실패\n%s" % (kind, t)
+            tails.append("%s ok" % kind)
+        return True, msg + "\n기준일 %s · " % base + " · ".join(tails)
+
+    if name == "load":
+        files = [str(out / ("pred_%s.csv" % k)) for k in MODELS]
+        return run([PY, "load_predictions.py"] + files, KIT, log, timeout=900)
+
+    return run([PY, "score_predictions.py"], KIT, log, timeout=1800)
+
+
+if __name__ == "__main__":
+    main()

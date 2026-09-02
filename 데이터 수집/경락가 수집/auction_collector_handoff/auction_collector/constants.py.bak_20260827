@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+API_URL = "https://apis.data.go.kr/B552845/katOrigin/trades"
+SOURCE = "공공데이터포털_전국 공영도매시장 경매원천정보"
+
+CSV_HEADERS = (
+    "auction_date",
+    "market_category",
+    "wholesale_market_code",
+    "wholesale_market_name",
+    "item_code",
+    "item_name",
+    "grade_code",
+    "grade_name",
+    "avg_auction_price_krw_per_kg",
+    "min_auction_price_krw_per_kg",
+    "max_auction_price_krw_per_kg",
+    "trade_volume_kg",
+    "trade_amount_krw",
+    "package_trade_quantity",
+    "source_trade_count",
+    "source",
+)
+
+NUMERIC_COLUMNS = (
+    "avg_auction_price_krw_per_kg",
+    "min_auction_price_krw_per_kg",
+    "max_auction_price_krw_per_kg",
+    "trade_volume_kg",
+    "trade_amount_krw",
+    "package_trade_quantity",
+    "source_trade_count",
+)
+
+NATURAL_KEY_COLUMNS = (
+    "auction_date",
+    "wholesale_market_code",
+    "item_code",
+    "grade_code",
+    "grade_name",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemSpec:
+    large_code: str
+    middle_code: str
+    item_code: str
+    item_name: str
+
+    @property
+    def api_key(self) -> str:
+        return f"{self.large_code}-{self.middle_code}"
+
+
+DEFAULT_ITEMS = (
+    ItemSpec("10", "01", "1001", "배추"),
+    ItemSpec("11", "01", "1101", "무"),
+    ItemSpec("12", "01", "1201", "양파"),
+    ItemSpec("12", "07", "1207", "건고추"),
+    ItemSpec("12", "09", "1209", "마늘"),
+)
+

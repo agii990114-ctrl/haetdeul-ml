@@ -1,0 +1,804 @@
+# -*- coding: utf-8 -*-
+"""
+crop_price_train 학습 스크립트
+==============================
+DB 에서 내보낸 CSV 로 LightGBM 을 학습하고 baseline 과 비교한다.
+
+사용법
+    python train.py <csv경로>
+    python train.py <csv경로> --raw          # 앵커 변환 없이 절대가격 학습(비교용)
+    python train.py <csv경로> --train-end 2023-12-31
+    python train.py <csv경로> --train-start 2017-01-01 --train-end 2022-12-31 \
+                             --valid-end 2023-12-31              # 3분할 (테스트 봉인)
+    python train.py <csv경로> ... --valid-end 2023-12-31 --report-test   # 테스트 개봉
+
+기본 동작
+    학습 2022~2024 / 검증 2025
+
+3분할 (--valid-end)
+    학습 (~train_end] / 검증 (train_end, valid_end] / 테스트 (valid_end, ~)
+    early stopping 과 모든 판단은 검증 구간으로만 한다.
+    테스트 구간은 --report-test 를 명시했을 때만 평가한다. 실험을 반복하며
+    검증 구간에 간접 과적합이 쌓이므로, 테스트는 최종 확인 용도로 아껴 둔다.
+    테스트 평가는 검증에서 정한 best_iter 를 그대로 쓴다 (테스트로 early stop 안 함).
+    타겟은 앵커 대비 로그 비율:  y = log(target / whsl_prc_lag1)
+    예측 시 역변환:              pred = whsl_prc_lag1 * exp(model_output)
+
+앵커 변환을 쓰는 이유
+    절대가격을 그대로 학습하면 모델이 리드타임을 무시하고 '평균 가격 수준'만
+    배운다. 실측에서 lead_biz_d 중요도가 1.5% 에 그쳤고 LT1 성능이 baseline
+    대비 95% 나빴다. 비율로 바꾸면 모델이 0 을 출력할 때 자동으로 baseline 과
+    같아지므로, baseline 아래로 떨어질 위험이 구조적으로 줄어든다.
+    덤으로 트리의 외삽 한계(학습 범위 밖 가격을 못 냄)도 완화된다.
+
+산출물
+    curve_leadtime.csv      리드타임별 성능
+    feature_importance.csv  feature 기여도
+"""
+import argparse
+import datetime
+import io
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+
+# 유통 3단계 타겟과 각각의 앵커
+#   타겟마다 짝이 되는 앵커를 써야 한다. 중도매가 타겟에 경락가 앵커를 쓰면
+#   스케일이 어긋나 앵커 변환의 의미가 사라진다.
+TARGETS = {
+    "auc":  ("target_auc_prc",  "auc_prc_lag1",  "경락가"),
+    "whsl": ("target_whsl_prc", "whsl_prc_lag1", "중도매가"),
+    "rtl":  ("target_rtl_prc",  "rtl_prc_lag1",  "소매가"),
+}
+TARGET = "target_whsl_prc"      # 기본값
+ANCHOR = "whsl_prc_lag1"
+
+# 기본 학습 품목
+#   마늘은 제외한다. 피마늘/깐마늘 구분이 확정되지 않았고, 중도매가가
+#   94% 의 날에 전일과 동일해 예측 문제로서 성격이 다르다.
+#   테이블에는 남아 있으므로 --items 로 언제든 포함할 수 있다.
+DEFAULT_ITEMS = ["배추", "양파", "무"]
+
+# 경제 지표 — 세 타겟 모두에서 성능을 떨어뜨린다 (ablation 2026-08-22)
+#   m2·epu·ppi 는 월·분기 단위로 갱신되어 일별 예측에서는 같은 값이
+#   한 달간 반복된다. 모델이 이를 시점 식별자로 오용해 과적합을 유발한다.
+#   경락가 +6.8%→+8.6% · 중도매가 +6.1%→+7.2% · 소매가 +12.7%→+15.3%
+ECON_COLS = ["m2_growth_rt", "epu_idx", "ppi_idx"]
+
+# 주산지 기상 — 소매가에서만 해롭다 (ablation 2026-08-22, 시드 7)
+#   소매가는 유통 마진이 두껍게 완충해 산지 작황의 영향이 희석된다.
+#   수요 신호(holiday_remain_d)가 이미 그 역할을 하므로 노이즈로 작용한다.
+#   소매가 +12.7% → +17.1%
+WEATHER_COLS = ["prod_area_stn_nm", "prod_area_temp_avg_lag1",
+                "prod_area_rain_sum7", "prod_area_rain_sum30",
+                "prod_area_gdd_sum30", "prod_area_clim_temp_avg10",
+                "prod_area_clim_yr_cnt"]
+
+# 학사일정 — 신규. ablation 판정 전이라 기본 제외한다 (2026-08-24)
+#   school_open_ratio 는 서울 초·중·고 개교율(급식 수요 대리변수)이다.
+#   crop_price_train 을 재생성하면 컬럼이 생기므로, 막아두지 않으면 확정된
+#   31-feature 기준선이 조용히 32개로 바뀐다. 폴드 두 개에서 부호가 같을 때만
+#   채택한다는 규율(CLAUDE.md 5.7)을 지키려면 기본은 제외여야 한다.
+#   실험은 --with-school 로 켠다. 채택되면 이 목록에서 빼면 된다.
+SCHOOL_COLS = ["school_open_ratio"]
+
+# 파생 컬럼 대칭화로 새로 생긴 가격 feature — 기본 제외 (2026-08-27)
+#   중도매가만 lag1·lag3·lag7·avg7·avg14·std7·prev_yr 7종을 갖고 경락은 3종,
+#   소매는 1종뿐이었다. v5.3 에서 10종을 채웠다.
+#   **막아두지 않으면 확정된 31-feature 기준선이 조용히 41개로 바뀐다.**
+#   실험은 --with-new-price 로 켠다.
+#   ※ baseline 후보로는 제외와 무관하게 항상 쓴다 — baseline 은 feature 가 아니다.
+NEW_PRICE_COLS = ["auc_prc_lag7", "auc_prc_avg14", "auc_prc_std7", "auc_prc_prev_yr",
+                  "rtl_prc_lag3", "rtl_prc_lag7", "rtl_prc_avg7",
+                  "rtl_prc_avg14", "rtl_prc_std7", "rtl_prc_prev_yr"]
+
+# 타겟별 baseline 후보 ★ (2026-08-27 수정)
+#   이전에는 후보 2개가 **타겟과 무관하게 중도매가 컬럼으로 고정**돼 있었다.
+#   경락가를 평가하면서 중도매가 7일평균을 후보로 놓은 것이라(배추 기준
+#   경락 721원 vs 중도매 1,169원) 자릿수가 달라 항상 탈락했고, 결국
+#   **"최강 baseline = 앵커" 가 구조상 자동으로 참**이 됐다.
+#   기록된 경락가·소매가 개선율은 전부 "앵커 대비" 값이다.
+#   실측: 검증 2023 경락가에서 14일평균이 어제값보다 강하다 (배추 0.2254 vs 0.2557).
+BASE_CANDS = {
+    "auc":  [("어제 가격", "auc_prc_lag1"), ("최근7일 평균", "auc_prc_avg7"),
+             ("최근14일 평균", "auc_prc_avg14"), ("작년 동시기", "auc_prc_prev_yr")],
+    "whsl": [("어제 가격", "whsl_prc_lag1"), ("최근7일 평균", "whsl_prc_avg7"),
+             ("최근14일 평균", "whsl_prc_avg14"), ("작년 동시기", "whsl_prc_prev_yr")],
+    "rtl":  [("어제 가격", "rtl_prc_lag1"), ("최근7일 평균", "rtl_prc_avg7"),
+             ("최근14일 평균", "rtl_prc_avg14"), ("작년 동시기", "rtl_prc_prev_yr")],
+}
+CANDS = BASE_CANDS["whsl"]      # main() 에서 타겟에 맞게 교체된다
+
+# 타겟별 추가 제외
+TARGET_DROP = {
+    "auc":  set(ECON_COLS) | set(SCHOOL_COLS),
+    "whsl": set(ECON_COLS) | set(SCHOOL_COLS),
+    "rtl":  set(ECON_COLS) | set(WEATHER_COLS) | set(SCHOOL_COLS),
+}
+
+# 모델 입력에서 제외 — 식별자·메타·정답·진단용 컬럼
+# 모델 입력에서 제외 — 식별자·메타·정답·진단용
+#   타겟 3종은 서로의 정답이므로 모두 제외한다. 하나라도 남으면 누수다.
+DROP = {"id", "created_at", "base_dt", "target_dt", "arr_qty_asof_date",
+        "arr_top1_region", "prod_area_fcst_temp_avg10",
+        "target_auc_prc", "target_whsl_prc", "target_rtl_prc",
+        # KREI 재배면적: 결측 75%. 결측이 무작위가 아니라 발간 일정에 의존해
+        # 모델이 "언제 발표되는가" 를 학습할 위험이 있다.
+        "crop_area_yoy_rt"}
+
+# 평년 기온 두 가지 — 하나만 쓴다 (--clim-daily 로 고른다)
+#   기존  prod_area_clim_temp_avg10   기준일+1~+10 을 뭉친 한 값. 18행 내내 같음
+#   실험  prod_area_clim_temp_tgt     그 행의 대상일 기준. 행마다 다름
+# 둘 다 넣으면 거의 같은 정보라 서로 중요도를 나눠 갖고, 무엇이 기여했는지
+# 알 수 없게 된다. 반드시 하나만 남긴다.
+CLIM_OLD = ["prod_area_clim_temp_avg10", "prod_area_clim_yr_cnt"]
+CLIM_NEW = ["prod_area_clim_temp_tgt", "prod_area_clim_tgt_yr_cnt"]
+CAT = ["item_nm", "target_dow", "prod_area_stn_nm"]
+
+PARAMS = dict(objective="regression_l1", metric="mae",
+              learning_rate=0.03, num_leaves=31,
+              feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1,
+              min_data_in_leaf=60, lambda_l2=1.0, verbosity=-1)
+
+
+def wmape(t, p):
+    t, p = np.asarray(t, float), np.asarray(p, float)
+    m = ~(np.isnan(t) | np.isnan(p))
+    return np.abs(t[m] - p[m]).sum() / np.abs(t[m]).sum()
+
+
+def dir_acc(t, p, ref):
+    t, p, ref = (np.asarray(x, float) for x in (t, p, ref))
+    m = ~(np.isnan(t) | np.isnan(p) | np.isnan(ref))
+    return ((t[m] - ref[m]) * (p[m] - ref[m]) > 0).mean()
+
+
+def load(path, *, target=None, anchor=None):
+    # Windows 에서 DBeaver 내보내기 인코딩이 제각각이라 순서대로 시도한다
+    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+        try:
+            df = pd.read_csv(path, encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise SystemExit("CSV 인코딩을 읽지 못했습니다. UTF-8 로 다시 내보내세요.")
+
+    tgt, anc = target or TARGET, anchor or ANCHOR
+    missing = [c for c in (tgt, anc, "base_dt", "lead_biz_d") if c not in df.columns]
+    if missing:
+        raise SystemExit(f"필수 컬럼이 없습니다: {missing}\n"
+                         f"내보낸 CSV 가 crop_price_train 이 맞는지 확인하세요.")
+
+    df["base_dt"] = pd.to_datetime(df["base_dt"])
+    df = df[df[tgt].notna() & df[anc].notna()].copy()
+
+    # 자연키로 정렬한다 — 재현성의 전제다.
+    #   DBeaver 내보내기는 ORDER BY 가 없어 행 순서가 매번 다르다. 그런데
+    #   LightGBM 의 bagging_fraction / feature_fraction 은 행 위치로 표본을
+    #   뽑으므로, 같은 데이터라도 순서가 다르면 다른 모델이 나온다.
+    #   실측: 동일 데이터를 세 가지 순서로 넣었을 때 같은 시드에서
+    #   WMAPE 0.1394 / 0.1381 / 0.1355 (중도매가·검증 2023). 시드 편차와
+    #   맞먹는 폭이라 기록된 수치를 재현할 수 없었다.
+    df = df.sort_values(["base_dt", "item_nm", "lead_biz_d"],
+                        kind="mergesort").reset_index(drop=True)
+
+    for c in CAT:
+        if c in df:
+            df[c] = df[c].astype("category")
+    return df
+
+
+MODEL_FORMAT = 1        # 번들 형식 버전. predict.py 가 검사한다
+
+
+def save_bundle(outdir, models, feats, cats, df, a, extra):
+    """모델과 추론에 필요한 모든 것을 한 디렉터리에 저장한다."""
+    import json
+    import os
+    import datetime
+    os.makedirs(outdir, exist_ok=True)
+    files = []
+    for m, sd_ in zip(models, a.seeds):
+        fn = "model_seed%d.txt" % sd_
+        m.save_model(os.path.join(outdir, fn), num_iteration=m.best_iteration)
+        files.append(fn)
+
+    meta = dict(
+        format=MODEL_FORMAT,
+        created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        source_csv=os.path.basename(a.csv),
+        models=files, seeds=list(a.seeds),
+        features=list(feats),                 # 순서가 곧 계약이다
+        categorical=list(cats),
+        cat_levels={c: [str(x) for x in df[c].cat.categories]
+                    for c in cats if hasattr(df[c], "cat")},
+        items=list(a.items),
+        train_start=a.train_start, train_end=a.train_end, valid_end=a.valid_end,
+        gate_lt=a.gate_lt, raw=bool(a.raw), fixed_iter=a.fixed_iter,
+        # ★ 수축 앵커 계수를 번들에 넣는다 (2026-08-28).
+        #   추론이 학습과 다른 앵커를 쓰면 역변환이 어긋나 조용히 틀린 값이
+        #   나온다. 옵션으로 따로 주게 두면 언젠가 반드시 어긋나므로,
+        #   **모델과 같이 저장해서 predict.py 가 읽게** 한다.
+        anchor_alpha=float(a.anchor_alpha),
+        params=PARAMS, **extra)
+    with open(os.path.join(outdir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    print()
+    print("모델 저장: %s  (시드 %d개 · feature %d개)" % (outdir, len(files), len(feats)))
+    if not a.gate_lt:
+        print("  [주의] --gate-lt 없이 저장했습니다. 운영 권장값은 3 입니다.")
+
+
+# ── 실험 기록 ────────────────────────────────────────────────────────
+#   왜 필요한가 (2026-08-28):
+#     실험을 돌리면 화면에만 찍히고 사라졌다. "그 수치 어디서 나왔냐" 를
+#     되짚으려면 같은 명령을 다시 돌려야 하는데, 시드가 같아도 그새 데이터가
+#     바뀌었으면 값이 달라진다. 실제로 08-27 에 타겟을 고치고 나서 이전
+#     기록들이 재현되지 않아 폐기해야 했다.
+#
+#   그래서 **돌릴 때마다 통째로 파일에 남긴다.**
+#     · 파일명에 초까지 넣는다 — 같은 분에 두 번 돌려도 안 겹친다
+#     · 첫머리에 실행한 명령을 그대로 적는다. 조건 없는 수치를 남기지
+#       않기 위해서다 (CLAUDE.md 11절)
+#     · 화면 출력은 그대로 유지한다. 파일은 사본이다
+#     · 기록에 실패해도 학습은 계속한다. 기록하다 죽으면 본말전도다
+
+def _results_dir() -> Path:
+    """저장 위치. 프로젝트 root 의 `실험결과/`.
+
+    train.py 는 ML/<날짜>/<키트>/ 안에 있어 root 가 여러 단계 위다.
+    경로를 박아두면 키트를 옮길 때 조용히 엉뚱한 곳에 쌓이므로,
+    root 임을 알려주는 표식(CLAUDE.md · SQL/)을 찾아 올라간다.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "CLAUDE.md").exists() or (parent / "SQL").is_dir():
+            return parent / "실험결과"
+    return here.parent / "실험결과"
+
+
+class _Tee:
+    """화면과 파일에 같이 쓴다."""
+
+    def __init__(self, stream, handle):
+        self.stream = stream
+        self.handle = handle
+
+    def write(self, text):
+        self.stream.write(text)
+        try:
+            self.handle.write(text)
+        except Exception:                                    # noqa: BLE001
+            pass
+        return len(text)
+
+    def flush(self):
+        self.stream.flush()
+        try:
+            self.handle.flush()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _open_log(argv):
+    """기록 파일을 열고 (파일객체, 경로) 를 돌려준다. 실패하면 (None, None)."""
+    nl = chr(10)
+    try:
+        started = datetime.datetime.now()
+        # 어떤 스크립트로 돌렸는지. ablation.py 도 이 함수를 쓰므로
+        # 이름을 박아두면 안 된다 (08-28 실제로 train.py 로 잘못 적혔다)
+        script = Path(sys.argv[0]).name or "train.py"
+        # 파일명에 스크립트·타겟·검증연도를 넣는다. 목록만 보고 찾을 수 있어야 한다
+        tag = [Path(script).stem]
+        for i, token in enumerate(argv):
+            if token == "--target" and i + 1 < len(argv):
+                tag.append(argv[i + 1])
+            if token == "--valid-end" and i + 1 < len(argv):
+                tag.append("valid" + argv[i + 1][:4])
+            if token == "--anchor-alpha" and i + 1 < len(argv):
+                tag.append("a" + argv[i + 1].replace(".", ""))
+        name = started.strftime("%Y-%m-%d_%H%M%S")
+        if tag:
+            name += "_" + "_".join(tag)
+        out_dir = _results_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / (name + ".txt")
+        handle = io.open(path, "w", encoding="utf-8")
+        bar = "=" * 70
+        handle.write(bar + nl)
+        handle.write("실행 시각  " + started.strftime("%Y-%m-%d %H:%M:%S") + nl)
+        handle.write("명령       python " + script + " " + " ".join(argv) + nl)
+        handle.write("작업 폴더  " + str(Path.cwd()) + nl)
+        handle.write(bar + nl)
+        return handle, path
+    except Exception as error:                               # noqa: BLE001
+        print("[주의] 실험 기록 파일을 열지 못했습니다: %s" % error)
+        return None, None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("csv")
+    ap.add_argument("--train-end", default="2024-12-31")
+    ap.add_argument("--valid-end", default=None,
+                    help="검증 종료일. 지정하면 그 이후는 테스트 구간으로 봉인")
+    ap.add_argument("--report-test", action="store_true",
+                    help="봉인된 테스트 구간도 평가 (최종 확인 시에만)")
+    ap.add_argument("--save-pred", default=None,
+                    help="검증 예측을 CSV 로 저장 (게이트·후처리 분석용). 테스트는 --report-test 시에만")
+    # ★ 기본값 0.6 (2026-08-28 채택 · 백로그 M-15 종결)
+    #   3타겟 × 2폴드 = 6개 조합에서 α=1.0 대비 5개 개선 · 1개 동일,
+    #   나빠진 조합이 없어 채택했다. 경락가 폴드A 가 −3.0% → +3.7% 로
+    #   뒤집힌 것이 가장 크다 (baseline 에 지던 상태를 벗어남).
+    #   α=0.4 는 폴드 B(태풍 2022)에서 후퇴해 탈락했다.
+    #   1.0 으로 되돌리려면 --anchor-alpha 1.0 을 준다.
+    ap.add_argument("--anchor-alpha", type=float, default=None,
+                    help="수축 앵커. α×어제값 + (1−α)×7일평균. "
+                         "기본 0.6 (2026-08-28 채택). 1.0 이면 어제값 단독(옛 방식). "
+                         "낮출수록 조용한 구간에 안정적이나 공급 충격에 늦게 반응한다")
+    ap.add_argument("--gate-lt", type=int, default=0,
+                    help="이 값 미만 리드타임은 모델 대신 baseline(앵커)을 쓴다. "
+                         "검증 2022·2023 모두에서 LT1~2 가 baseline 보다 나빠 운영 권장값은 3")
+    ap.add_argument("--save-model", default=None,
+                    help="학습된 모델과 추론 메타를 이 디렉터리에 저장 (predict.py 입력)")
+    ap.add_argument("--fixed-iter", type=int, default=None,
+                    help="early stopping 대신 고정 라운드 수로 학습 (안정성 비교용)")
+    ap.add_argument("--raw", action="store_true", help="앵커 변환 없이 절대가격 학습")
+    ap.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
+    ap.add_argument("--target", choices=list(TARGETS), default="whsl",
+                    help="auc=경락가 · whsl=중도매가 · rtl=소매가")
+    ap.add_argument("--train-start", help="학습 시작일. 생략 시 전체")
+    ap.add_argument("--clim-daily", action="store_true",
+                    help="평년 기온을 대상일 기준으로 바꾼다 (실험 · 2026-08-31). "
+                         "지금 값은 18행 내내 고정이라 예측이 일직선이 되는 원인 중 하나")
+    ap.add_argument("--keep-all", action="store_true",
+                    help="ablation 으로 제외된 feature 도 모두 사용 (비교용)")
+    ap.add_argument("--with-new-price", action="store_true",
+                    help="v5.3 신규 가격 파생 10종을 feature 로 포함 (기본 제외)")
+    ap.add_argument("--with-school", action="store_true",
+                    help="학사일정(school_open_ratio) 을 포함한다. ablation 판정 전 실험용")
+    ap.add_argument("--items", nargs="+", default=DEFAULT_ITEMS,
+                    help=f"학습 품목. 기본 {' '.join(DEFAULT_ITEMS)}")
+    a = ap.parse_args()
+
+    global TARGET, ANCHOR, CANDS
+    TARGET, ANCHOR, label = TARGETS[a.target]
+
+    # ★ 타겟별 앵커 α (2026-08-28 2차 판정 · 백로그 M-15 종결)
+    #   1차에는 세 타겟 모두 0.6 을 썼는데, baseline 후보에 수축앵커를
+    #   넣고 α 5개로 다시 재보니 **타겟마다 최적이 다르다.**
+    #   두 폴드 오차 합 (검증 2023 + 검증 2022):
+    #     경락가   36.5 / 35.5 / 35.1 / 34.6 / 34.7   (α 1.0→0.2)  → 0.4
+    #     중도매가 29.2 / 29.0 / 29.3 / 29.4 / 30.0                → 0.8
+    #     소매가   19.2 / 19.2 / 19.9 / 20.4 / 21.1                → 1.0
+    #   경락가는 하루 변동이 커서 평균을 많이 섞어야 하고, 소매가는 이미
+    #   매끄러워 어제값이 최선이다. 전 타겟 0.6 은 소매가에서 폴드 B 기준
+    #   4.1%p 손해였다.
+    ALPHA_BY_TARGET = {"auc": 0.4, "whsl": 0.8, "rtl": 1.0}
+    if a.anchor_alpha is None:
+        a.anchor_alpha = ALPHA_BY_TARGET[a.target]
+        print(f"[앵커] 타겟 기본값 α={a.anchor_alpha} 적용 "
+              f"(--anchor-alpha 로 바꿀 수 있음)")
+    CANDS = BASE_CANDS[a.target]
+    print(f"\n[타겟] {label}  ({TARGET} / 앵커 {ANCHOR})")
+
+    global DROP
+    #   평년 기온은 둘 중 하나만 남긴다. --keep-all 이어도 이건 지킨다 —
+    #   둘 다 넣으면 실험 자체가 성립하지 않는다.
+    DROP = DROP | set(CLIM_OLD if a.clim_daily else CLIM_NEW)
+    print(f"[feature] 평년 기온 — {'대상일 기준 (실험)' if a.clim_daily else '기준일+1~10 (현행)'}")
+    if not a.keep_all:
+        extra = set(TARGET_DROP.get(a.target, set()))
+        if not a.with_new_price:
+            extra |= set(NEW_PRICE_COLS)
+        if a.with_school:
+            extra -= set(SCHOOL_COLS)
+        DROP = DROP | extra
+        if extra:
+            groups = []
+            if set(ECON_COLS) <= extra:
+                groups.append("경제 3종")
+            if set(WEATHER_COLS) <= extra:
+                groups.append("주산지 기상 7종")
+            if set(SCHOOL_COLS) <= extra:
+                groups.append("학사일정 1종")
+            print(f"[feature] ablation 반영 제외 — {' · '.join(groups)}")
+            print(f"          (--keep-all 로 되돌릴 수 있음)")
+    if a.with_school:
+        print("[feature] 학사일정 포함 (--with-school) — ablation 판정 전 실험 구성")
+
+    df = load(a.csv)
+
+    if a.with_school:
+        gone = [c for c in SCHOOL_COLS if c not in df.columns]
+        if gone:
+            # 여기서 멈추지 않으면 "학사일정 포함" 이라고 찍어놓고 실제로는
+            # 없는 채로 학습해, 기준선과 같은 결과를 새 결과로 착각하게 된다.
+            raise SystemExit(
+                f"--with-school 인데 CSV 에 {', '.join(gone)} 이 없습니다.\n"
+                f"  SQL/29_ref_school_day.sql → DBEAVER_run_v5.sql 순서로 재생성한 뒤\n"
+                f"  crop_price_train 을 다시 내보내세요.")
+
+    all_items = sorted(df.item_nm.unique())
+    keep = [i for i in a.items if i in all_items]
+    dropped = [i for i in all_items if i not in keep]
+    if not keep:
+        raise SystemExit(f"선택한 품목이 데이터에 없습니다.\n  요청: {a.items}\n  존재: {all_items}")
+    df = df[df.item_nm.isin(keep)].copy()
+    df["item_nm"] = df.item_nm.cat.remove_unused_categories() \
+        if hasattr(df.item_nm, "cat") else df.item_nm
+    print(f"[품목] 학습 {keep}" + (f" · 제외 {dropped}" if dropped else ""))
+
+    if a.train_start:
+        df = df[df.base_dt >= a.train_start]
+
+    # ── 수축 앵커 ★ (2026-08-28 추가 · 백로그 M-15) ───────────
+    #   앵커 변환을 쓰므로 **앵커는 정의상 baseline** 이다 — 모델이 0 을 내면
+    #   앵커가 그대로 답이 된다. 그래서 "앵커보다 나쁘기" 는 구조적으로 어렵지만,
+    #   **앵커보다 강한 baseline 이 있으면 거기에는 진다.**
+    #
+    #   실측(검증 2023 · 경락가): 최강 baseline 이 어제값이 아니라 7일평균이었고
+    #   (0.1800 vs 0.1703), 그 결과 개선율이 −3.0% 였다. 어제 하루가 우연히
+    #   튀면 예측도 같이 튀기 때문이다.
+    #
+    #       앵커 = α × 어제값 + (1−α) × 7일평균
+    #
+    #   α=1.0 이 현행(어제값 단독)이다. 낮출수록 조용한 구간에서 안정적이지만
+    #   공급 충격에는 늦게 반응한다. 폴드 두 개에서 같이 좋아야 채택한다.
+    #   ★★ 원본 컬럼을 절대 덮어쓰지 않는다 (2026-08-28 수정).
+    #     처음엔 df[ANCHOR] 를 그 자리에서 덮었는데, ANCHOR(auc_prc_lag1)가
+    #     **baseline 후보 ①"어제 가격" 과 같은 컬럼**이다. 그래서 α<1 로
+    #     돌리면 baseline ①이 어제 가격이 아니라 수축 앵커가 됐다.
+    #     실측 증거(무·검증2023): ①이 α=1.0 에서 0.2282, α=0.6 에서 0.2144 로
+    #     바뀌었다. ②③④는 그대로였다. 모델을 자기 앵커와 비교한 셈이다.
+    #     → 새 컬럼에 만들고 원본은 손대지 않는다.
+    ANCHOR_RAW = ANCHOR
+    if a.anchor_alpha < 1.0:
+        avg7 = ANCHOR_RAW.replace("_lag1", "_avg7")
+        if avg7 not in df.columns:
+            raise SystemExit(f"--anchor-alpha 를 쓰려면 {avg7} 컬럼이 필요합니다.")
+        ANCHOR = "_anchor_mix"
+        df[ANCHOR] = (a.anchor_alpha * df[ANCHOR_RAW]
+                      + (1 - a.anchor_alpha) * df[avg7])
+        df = df[df[ANCHOR] > 0].copy()
+        #   원본은 feature 에서 뺀다. 수축값과 거의 같은 정보라 중복이다.
+        #   ※ 수축값(_anchor_mix)은 feature 로 **남긴다.** 앵커는 원래부터
+        #     feature 였다 (auc_prc_lag1 이 중요도 상위였음). 여기서 빼면
+        #     모델 구성이 바뀌므로, 장애 복구와 설계 변경을 섞지 않는다.
+        #     대신 predict.py 가 이 이름의 컬럼을 만들도록 맞춘다 (08-31).
+        DROP = DROP | {ANCHOR_RAW}
+        print(f"[앵커] 수축 α={a.anchor_alpha}  "
+              f"{a.anchor_alpha}×{ANCHOR_RAW} + {1 - a.anchor_alpha:.2f}×{avg7}"
+              f"  → 새 컬럼 {ANCHOR}")
+
+    #   ★ 수축 앵커도 baseline 후보에 넣는다 (2026-08-28 · 사용자 지적).
+    #     수축 앵커는 **모델 없이 계산되는 값**이다. 후보에서 빼면
+    #     "단순 규칙을 개선해 놓고 모델 공로로 돌리는" 것이 된다.
+    #     α 를 0.2~0.8 로 모두 넣어, 모델은 **가장 센 수축 규칙까지 이겨야**
+    #     한다. 이게 M-15 가 물은 "앵커가 최선의 baseline 인가" 에 대한 답이다.
+    _avg7 = ANCHOR_RAW.replace("_lag1", "_avg7")
+    if _avg7 in df.columns:
+        for _a in (0.2, 0.4, 0.6, 0.8):
+            _col = f"_base_mix{int(_a * 10)}"
+            df[_col] = _a * df[ANCHOR_RAW] + (1 - _a) * df[_avg7]
+            CANDS = CANDS + [(f"수축앵커 α={_a}", _col)]
+            DROP = DROP | {_col}        # baseline 전용. feature 로는 쓰지 않는다
+
+    df["y_ratio"] = np.log(df[TARGET] / df[ANCHOR])
+    feats = [c for c in df.columns if c not in DROP | {"y_ratio"}]
+    cats = [c for c in CAT if c in feats]
+
+    tr = df[df.base_dt <= a.train_end]
+    if a.valid_end:
+        if pd.Timestamp(a.valid_end) <= pd.Timestamp(a.train_end):
+            raise SystemExit("--valid-end 는 --train-end 보다 뒤여야 합니다.")
+        va = df[(df.base_dt > a.train_end) & (df.base_dt <= a.valid_end)].copy()
+        te = df[df.base_dt > a.valid_end].copy()
+    else:
+        va = df[df.base_dt > a.train_end].copy()
+        te = df.iloc[0:0].copy()
+    if len(va) == 0:
+        print("검증 구간이 비었습니다. --train-end / --valid-end 를 확인하세요."); return
+
+    def span(x):
+        return (f"{len(x):>7,}행  {x.base_dt.min().date()} ~ {x.base_dt.max().date()}"
+                f"  (고유 기준일 {x.base_dt.nunique():,})")
+
+    print("=" * 68)
+    print(f"학습  {span(tr)}")
+    print(f"검증  {span(va)}")
+    if a.valid_end:
+        if len(te):
+            state = "개봉 (--report-test)" if a.report_test else "봉인"
+            print(f"테스트{span(te)}  [{state}]")
+        else:
+            print("테스트  (없음 — valid-end 이후 데이터 없음)")
+    print(f"feature {len(feats)}개 · 타겟 {'절대가격' if a.raw else '앵커 대비 로그비율'}")
+    print("=" * 68)
+
+    # 유효 표본 경고 — 18행은 같은 기준일의 복제이므로 독립 표본이 아니다
+    if tr.base_dt.nunique() < 1500:
+        print(f"\n[주의] 고유 기준일이 {tr.base_dt.nunique():,}개뿐입니다.")
+        print("       한 기준일이 리드타임 18행으로 복제되므로 실질 독립 표본은")
+        print("       행수가 아니라 기준일 수입니다. 학습이 불안정할 수 있습니다.")
+
+    # ── 학습 ──────────────────────────────────────────────────
+    #   early stopping 은 검증 구간으로만 한다. 테스트 구간은 학습 과정에
+    #   어떤 형태로도 개입하지 않는다.
+    # ── 무엇으로 어떻게 돌렸나를 남긴다 (2026-08-28) ──────────
+    #   기록 파일만 보고 재현할 수 있어야 한다. 명령줄에 안 적은
+    #   기본값(학습률·잎 수 등)이 오히려 결과를 좌우하므로,
+    #   **실제로 쓰인 값**을 찍는다.
+    print("\n[모델]")
+    print(f"  종류        LightGBM {lgb.__version__} (GBDT)")
+    print(f"  앙상블      시드 {len(a.seeds)}개 {list(a.seeds)} · 예측 평균")
+    print(f"  학습 목표   {'절대가격' if a.raw else '앵커 대비 로그비율'}"
+          f"  ({TARGET}{'' if a.raw else ' / ' + ANCHOR})")
+    if not a.raw:
+        if a.anchor_alpha < 1.0:
+            print(f"  앵커        수축 α={a.anchor_alpha}  "
+                  f"(어제값 {a.anchor_alpha:.0%} + 7일평균 {1 - a.anchor_alpha:.0%})")
+        else:
+            print("  앵커        어제값 단독 (α=1.0 · 현행)")
+    if a.fixed_iter:
+        print(f"  트리 수     고정 {a.fixed_iter}그루 (early stopping 미사용)")
+    else:
+        print("  트리 수     조기 종료 (상한 5,000 · 200회 개선 없으면 중단)")
+    print(f"  범주형      {CAT}")
+    print(f"  feature     {len(feats)}개")
+    if a.gate_lt:
+        print(f"  게이트      리드타임 < {a.gate_lt} 는 모델 대신 앵커 사용")
+
+    print("\n[하이퍼파라미터]")
+    for k in sorted(PARAMS):
+        print(f"  {k:<20} {PARAMS[k]}")
+
+    print("\n[LightGBM]")
+    label_tr = tr[TARGET] if a.raw else tr.y_ratio
+    label_va = va[TARGET] if a.raw else va.y_ratio
+    preds, preds_te, iters, models = [], [], [], []
+    for s in a.seeds:
+        p = dict(PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s)
+        if a.fixed_iter:
+            m = lgb.train(p, lgb.Dataset(tr[feats], label_tr, categorical_feature=cats),
+                          num_boost_round=a.fixed_iter)
+            m.best_iteration = a.fixed_iter
+        else:
+            m = lgb.train(p, lgb.Dataset(tr[feats], label_tr, categorical_feature=cats),
+                          num_boost_round=5000,
+                          valid_sets=[lgb.Dataset(va[feats], label_va)],
+                          callbacks=[lgb.early_stopping(200, verbose=False)])
+        out = m.predict(va[feats], num_iteration=m.best_iteration)
+        pr = out if a.raw else va[ANCHOR].values * np.exp(out)
+        preds.append(pr); iters.append(m.best_iteration)
+        print(f"  seed {s:>3}: WMAPE {wmape(va[TARGET], pr):.4f}  (best_iter {m.best_iteration})")
+        if a.report_test and len(te):
+            out_te = m.predict(te[feats], num_iteration=m.best_iteration)
+            preds_te.append(out_te if a.raw else te[ANCHOR].values * np.exp(out_te))
+        models.append(m)
+        last = m
+
+    if max(iters) < 20:
+        print("\n[주의] best_iter 가 매우 낮습니다. 모델이 학습을 거의 못 했다는 뜻이며,")
+        print("       데이터에서 baseline 을 넘을 신호를 찾지 못한 상태입니다.")
+
+    ws = [wmape(va[TARGET], p) for p in preds]
+    sd = np.std(ws, ddof=1) if len(ws) > 1 else float("nan")
+    print(f"\n  시드별 {np.mean(ws):.4f} ± {sd:.4f}  (시드 {len(ws)}개)")
+
+    # ── feature importance ────────────────────────────────────
+    imp = pd.Series(last.feature_importance("gain"), index=feats)
+    imp = (imp / max(imp.sum(), 1) * 100).sort_values(ascending=False)
+    print("\n[Feature Importance 상위 15]")
+    for k, v in imp.head(15).items():
+        print(f"  {k:32s} {v:5.1f}%")
+    imp.to_csv("feature_importance.csv", header=["gain_pct"])
+
+    # ── 리드타임 게이트 ───────────────────────────────────────
+    #   LT1~2 는 어제 가격이 이미 정답에 가까워 모델이 개입할수록 나쁘다
+    #   (검증 2022·2023, 세 타겟 모두). 운영에서는 baseline 으로 대체한다.
+    if a.gate_lt > 0:
+        g = (va.lead_biz_d < a.gate_lt).values
+        preds = [np.where(g, va[ANCHOR].values, p) for p in preds]
+        if preds_te:
+            gt = (te.lead_biz_d < a.gate_lt).values
+            preds_te = [np.where(gt, te[ANCHOR].values, p) for p in preds_te]
+        print(f"\n[게이트] LT < {a.gate_lt} 는 baseline 으로 대체 ({g.mean()*100:.0f}% 행)")
+
+    # ── 예측 구간(밴드) 측정 ──────────────────────────────────
+    #   prediction_log 의 pred_lo / pred_hi 근거다.
+    #
+    #   시드 편차는 쓰지 않는다. 시드끼리 얼마나 다르게 답하느냐일 뿐이고
+    #   실제 오차와 자릿수가 다르다 — 실측 시드편차 1.6~1.8% 대 WMAPE 10~17%.
+    #   그걸 신뢰구간처럼 쓰면 불확실성을 10배 가까이 과소평가한다.
+    #
+    #   대신 검증 구간에서 actual / pred 비율의 분위수를 품목 × 리드타임별로 잰다.
+    #   "작년 이 조합에서 10건 중 8건이 이 범위 안에 들어왔다" 는 뜻이라
+    #   근거를 댈 수 있고, 리드타임이 길수록 실제로 넓어진다.
+    ens_va = np.mean(preds, axis=0)
+    bt = va[["item_nm", "lead_biz_d"]].copy()
+    bt["r"] = np.asarray(va[TARGET], float) / np.where(ens_va > 0, ens_va, np.nan)
+    band = {}
+    for (it, lt), gb in bt.groupby(["item_nm", "lead_biz_d"], observed=True):
+        r = gb["r"].dropna()
+        if len(r) < 30:          # 표본이 얇으면 분위수가 의미 없다
+            continue
+        band["%s|%d" % (it, int(lt))] = [round(float(r.quantile(0.10)), 4),
+                                         round(float(r.quantile(0.50)), 4),
+                                         round(float(r.quantile(0.90)), 4)]
+    if band:
+        w = [(v[2] - v[0]) for v in band.values()]
+        print("[밴드] 품목×리드타임 %d조합 · 폭 중앙값 %.1f%% (q10~q90)"
+              % (len(band), float(np.median(w)) * 100))
+
+    # ── 모델 저장 ─────────────────────────────────────────────
+    #   추론(predict.py)은 학습과 완전히 같은 조건에서 돌아야 한다.
+    #   feature 순서 하나만 어긋나도 조용히 엉뚱한 값이 나오므로 feature 목록과
+    #   categorical 수준까지 함께 저장한다. categorical 은 pandas category 코드로
+    #   인코딩되므로 추론 시 카테고리 집합이 다르면 코드가 통째로 밀린다.
+    #   게이트 적용 후에 저장한다 — 밴드가 게이트 반영 예측 기준이어야 한다.
+    if a.save_model:
+        save_bundle(a.save_model, models, feats, cats, df, a,
+                    # ★ 번들에는 **원본** 앵커 이름을 넣는다 (2026-08-28).
+                    #   ANCHOR 는 α<1 이면 "_anchor_mix" 로 바뀌는데, 그 컬럼은
+                    #   추론 입력(predict_input)에 없다. predict.py 는 원본 이름과
+                    #   anchor_alpha 를 받아 자기가 수축을 만든다.
+                    dict(target=a.target, target_col=TARGET, anchor_col=ANCHOR_RAW,
+                         label=label, iters=iters, valid_wmape=float(np.mean(ws)),
+                         valid_sd=None if len(ws) < 2 else float(sd),
+                         valid_wmape_gated=float(wmape(va[TARGET], ens_va)),
+                         band=band))
+
+    # ── 예측 저장 ─────────────────────────────────────────────
+    if a.save_pred:
+        keep_cols = ["base_dt", "item_nm", "lead_biz_d", "target_dt", TARGET, ANCHOR,
+                     "whsl_prc_std7", "whsl_prc_avg7"]
+        keep_cols = [c for c in keep_cols if c in va.columns]
+        o = va[keep_cols].copy(); o["pred"] = np.mean(preds, axis=0); o["split"] = "valid"
+        if a.report_test and len(te):
+            o2 = te[keep_cols].copy(); o2["pred"] = np.mean(preds_te, axis=0); o2["split"] = "test"
+            o = pd.concat([o, o2])
+        o.to_csv(a.save_pred, index=False, encoding="utf-8-sig")
+        print(f"\n예측 저장: {a.save_pred} ({len(o):,}행)")
+
+    # ── 평가 ──────────────────────────────────────────────────
+    evaluate(va, np.mean(preds, axis=0), "검증", "")
+    if a.report_test and len(te):
+        print("\n" + "#" * 68)
+        print("#  테스트 구간 — 봉인 해제. 이 수치로 모델을 고르지 말 것.")
+        print("#  (검증에서 정한 best_iter 그대로 적용, 테스트로 early stop 안 함)")
+        print("#" * 68)
+        evaluate(te, np.mean(preds_te, axis=0), "테스트", "_test")
+
+    saved = "curve_leadtime.csv · curve_item_leadtime.csv · feature_importance.csv"
+    if a.report_test and len(te):
+        saved += " · curve_leadtime_test.csv · curve_item_leadtime_test.csv"
+    print(f"\n저장: {saved}")
+
+
+def evaluate(va, pred, tag, suffix):
+    """한 구간(검증 또는 테스트)의 성능을 품목별·리드타임별로 출력하고 CSV 저장."""
+    va = va.copy()
+    va["pred"] = pred
+
+    # ── baseline ──────────────────────────────────────────────
+    #   품목별로 반드시 분해한다. 통합 WMAPE 는 가격 수준이 높은 품목이
+    #   분모를 지배해 착시를 만든다. (마늘 6,244원/kg 이 분모의 66% 를
+    #   차지하면서 통합값을 0.2114 → 0.0781 로 끌어내린 사례가 있었다)
+    cands = [(n, c) for n, c in CANDS if c in va.columns]
+
+    print(f"\n[{tag} BASELINE — 품목별]")
+    print(f"  {'품목':<6}" + "".join(f"{n:>14s}" for n, _ in cands) + f"{'최강':>12}")
+    base_by_item = {}
+    for item, g in va.groupby("item_nm", observed=True):
+        vals = [(n, wmape(g[TARGET], g[c])) for n, c in cands]
+        best_n, best_v = min(vals, key=lambda x: x[1])
+        base_by_item[item] = (best_n, best_v)
+        print(f"  {str(item):<6}" + "".join(f"{v:14.4f}" for _, v in vals)
+              + f"{best_n:>12}")
+
+    base = {n: wmape(va[TARGET], va[c]) for n, c in cands}
+    best_name = min(base, key=base.get)
+    best_base = base[best_name]
+    final = wmape(va[TARGET], va.pred)
+    print(f"\n  [통합] {best_name} {best_base:.4f}"
+          "   ※ 참고용. 품목별 값으로 판단할 것")
+    print(f"  앙상블 {final:.4f}   baseline 대비 {(1 - final/best_base)*100:+.1f}%")
+
+    # ── 품목별 성능 ★ ─────────────────────────────────────────
+    print(f"\n[{tag} 품목별 성능]")
+    print(f"  {'품목':<6}{'모델':>10}{'baseline':>10}{'개선율':>9}{'방향정확도':>11}{'행수':>9}")
+    for item, g in va.groupby("item_nm", observed=True):
+        mo = wmape(g[TARGET], g.pred)
+        bn, bv = base_by_item[item]
+        da = dir_acc(g[TARGET], g.pred, g[ANCHOR])
+        print(f"  {str(item):<6}{mo:10.4f}{bv:10.4f}{(1-mo/bv)*100:+8.1f}%"
+              f"{da*100:10.1f}%{len(g):9,}")
+
+    # ── 실제 가격 대비 오차 ★ (2026-08-28 추가) ───────────────
+    #   WMAPE 0.1757 만 보면 "얼마나 틀리는지" 가 안 잡힌다. 매입 파트가
+    #   임계값을 잡을 때 필요한 건 **원 단위 오차**다.
+    #   평균오차(MAE)와 중앙값오차를 같이 낸다 — 몇 건의 큰 실수가 평균을
+    #   끌어올리면 둘이 크게 벌어지고, 그 자체가 정보다.
+    print(f"\n[{tag} 실제 가격 대비 오차]")
+    print(f"  {'품목':<6}{'평균 실제가':>12}{'평균오차':>11}{'오차율':>9}"
+          f"{'중앙값오차':>12}{'10건중 1건은':>14}")
+    for item, g in va.groupby("item_nm", observed=True):
+        act = np.asarray(g[TARGET], float)
+        prd = np.asarray(g.pred, float)
+        m = ~(np.isnan(act) | np.isnan(prd))
+        act, prd = act[m], prd[m]
+        if len(act) == 0:
+            continue
+        err = np.abs(prd - act)
+        pct = err / act
+        print(f"  {str(item):<6}{act.mean():11,.0f}원{err.mean():10,.0f}원"
+              f"{err.mean()/act.mean()*100:8.1f}%{np.median(err):11,.0f}원"
+              f"{np.quantile(pct, 0.9)*100:12.0f}% 이상")
+    _a = np.asarray(va[TARGET], float)
+    _p = np.asarray(va.pred, float)
+    _m = ~(np.isnan(_a) | np.isnan(_p))
+    print(f"  {'전체':<6}{_a[_m].mean():11,.0f}원"
+          f"{np.abs(_p[_m] - _a[_m]).mean():10,.0f}원"
+          f"{np.abs(_p[_m] - _a[_m]).mean() / _a[_m].mean() * 100:8.1f}%")
+    print("  ※ '10건중 1건은' 은 오차율 상위 10% 지점. 최악의 경우를 본다")
+
+    # ── 리드타임별 ────────────────────────────────────────────
+    print(f"\n[{tag} 리드타임별]")
+    print(f"  {'LT':>3} {'모델':>9} {'baseline':>9} {'개선율':>8} {'방향정확도':>10}")
+    rows = []
+    for lt, g in va.groupby("lead_biz_d"):
+        mo = wmape(g[TARGET], g.pred)
+        bl = wmape(g[TARGET], g[ANCHOR])
+        da = dir_acc(g[TARGET], g.pred, g[ANCHOR])
+        rows.append(dict(lead_biz_d=lt, model=round(mo, 4), baseline=round(bl, 4),
+                         improve=round(1 - mo/bl, 4), dir_acc=round(da, 4)))
+        print(f"  {lt:3d} {mo:9.4f} {bl:9.4f} {(1-mo/bl)*100:+7.1f}% {da*100:9.1f}%")
+    pd.DataFrame(rows).to_csv(f"curve_leadtime{suffix}.csv", index=False)
+
+    # 품목 × 리드타임 교차 — 저장 트레이딩은 품목별 매매 시점이 다르므로
+    # 어느 품목이 어느 리드타임에서 잘 맞는지가 중요하다
+    cross = []
+    for (item, lt), g in va.groupby(["item_nm", "lead_biz_d"], observed=True):
+        cross.append(dict(item_nm=item, lead_biz_d=lt,
+                          model=round(wmape(g[TARGET], g.pred), 4),
+                          baseline=round(wmape(g[TARGET], g[ANCHOR]), 4),
+                          dir_acc=round(dir_acc(g[TARGET], g.pred, g[ANCHOR]), 4),
+                          n=len(g)))
+    pd.DataFrame(cross).to_csv(f"curve_item_leadtime{suffix}.csv", index=False)
+
+    # ── 구간별 ────────────────────────────────────────────────
+    print(f"\n[{tag} 구간별]")
+    if "whsl_prc_std7" in va and "whsl_prc_avg7" in va:
+        va["vol"] = va.whsl_prc_std7 / va.whsl_prc_avg7
+        thr = va.vol.quantile(.9)
+        for lab, sub in [("평상시", va[va.vol <= thr]), ("변동기 상위10%", va[va.vol > thr])]:
+            print(f"  {lab:14s} 모델 {wmape(sub[TARGET], sub.pred):.4f} | "
+                  f"baseline {wmape(sub[TARGET], sub[ANCHOR]):.4f}")
+
+
+if __name__ == "__main__":
+    _handle, _path = _open_log(sys.argv[1:])
+    if _handle is None:
+        main()
+    else:
+        _saved = sys.stdout
+        sys.stdout = _Tee(_saved, _handle)
+        try:
+            main()
+        finally:
+            sys.stdout = _saved
+            _nl = chr(10)
+            try:
+                _handle.write(_nl + "=" * 70 + _nl)
+                _handle.write(
+                    "종료 시각  "
+                    + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + _nl)
+                _handle.close()
+            except Exception:                                # noqa: BLE001
+                pass
+            print(_nl + "[기록] %s" % _path)

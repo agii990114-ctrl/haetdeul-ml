@@ -1,0 +1,372 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from .api import DataGoClient
+from .config import load_dotenv, load_items
+from .csvio import (
+    CsvValidationError,
+    ValidationResult,
+    create_bundle,
+    create_excel_copy,
+    merge_csv,
+    validate_csv,
+    write_csv_atomic,
+    write_manifest,
+)
+from .postgres import load_postgres, max_loaded_date, schema_sql
+from .workflow import Collector
+
+
+def _json_log(payload: dict[str, object], *, error: bool = False) -> None:
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=sys.stderr if error else sys.stdout)
+
+
+def _progress(payload: dict[str, object]) -> None:
+    _json_log(payload, error=True)
+
+
+def _parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"YYYY-MM-DD 날짜가 아닙니다: {value}") from error
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    temp.write_text(text, encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _read_completed_date(path: Path) -> date | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    value = payload.get("lastCompletedDate") if isinstance(payload, dict) else None
+    if not isinstance(value, str):
+        raise RuntimeError(f"상태 파일에 lastCompletedDate가 없습니다: {path}")
+    return date.fromisoformat(value)
+
+
+def _write_completed_state(path: Path, completed: date, current_summary: dict[str, object]) -> None:
+    payload = {
+        "lastCompletedDate": completed.isoformat(),
+        "updatedAt": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(),
+        "currentDbCsv": current_summary["dbCsv"],
+        "currentRowCount": current_summary["rowCount"],
+        "currentMaxTradeDate": current_summary["maxDate"],
+    }
+    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def _artifact_paths(output_dir: Path, stem: str) -> dict[str, Path]:
+    return {
+        "db": output_dir / f"{stem}_db.csv",
+        "excel": output_dir / f"{stem}_excel.csv",
+        "manifest": output_dir / f"{stem}_manifest.json",
+        "sql": output_dir / f"{stem}_postgresql.sql",
+        "bundle": output_dir / f"{stem}_bundle.zip",
+    }
+
+
+def _prepare_artifacts(paths: dict[str, Path], *, generated_from: str) -> dict[str, object]:
+    db_result = validate_csv(paths["db"], require_bom=False)
+    create_excel_copy(paths["db"], paths["excel"])
+    excel_result = validate_csv(paths["excel"], require_bom=True)
+    _write_text_atomic(paths["sql"], schema_sql())
+    write_manifest(paths["manifest"], db_result, excel_result, generated_from=generated_from)
+    create_bundle(paths["bundle"], (paths["db"], paths["excel"], paths["manifest"], paths["sql"]))
+    return {
+        "dbCsv": str(paths["db"]),
+        "excelCsv": str(paths["excel"]),
+        "manifest": str(paths["manifest"]),
+        "postgresqlSql": str(paths["sql"]),
+        "bundle": str(paths["bundle"]),
+        "rowCount": db_result.row_count,
+        "minDate": db_result.min_date,
+        "maxDate": db_result.max_date,
+        "sameContentIgnoringBom": True,
+    }
+
+
+def _collector(args: argparse.Namespace) -> Collector:
+    api_key = os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(".env에 DATA_GO_KR_SERVICE_KEY를 설정하세요.")
+    items = load_items(args.items_config)
+    client = DataGoClient(
+        api_key,
+        endpoint=args.endpoint,
+        page_size=args.page_size,
+        timeout=args.timeout,
+        max_retries=args.max_retries,
+    )
+    return Collector(
+        client,
+        items,
+        args.cache_dir,
+        concurrency=args.concurrency,
+        progress=_progress,
+    )
+
+
+def _maybe_load_postgres(args: argparse.Namespace, csv_path: Path) -> dict[str, object] | None:
+    if not args.load_postgres:
+        return None
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("--load-postgres 사용 시 .env에 DATABASE_URL이 필요합니다.")
+    validation = validate_csv(csv_path, require_bom=False)
+    return load_postgres(database_url, csv_path, validation)
+
+
+def _recover_postgres(args: argparse.Namespace, csv_path: Path,
+                      csv_result: ValidationResult) -> dict[str, object] | None:
+    """DB 가 CSV 보다 뒤처져 있으면 현재 CSV 를 다시 싣는다.
+
+    돌려주는 값:
+      None            싣지 않았다 (평소 · 두 쪽 최신일이 같다)
+      {...}           실제로 다시 실었다. 무엇을 메웠는지 담는다
+
+    **뒤처졌을 때만** 싣는다. 날짜 비교 한 번이라 평소 비용은 없다.
+    적재 자체가 실패하면 예외가 그대로 올라가 배치가 실패로 잡힌다 —
+    조용히 넘어가면 이 함수를 만든 이유가 사라진다.
+    """
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("--load-postgres 사용 시 .env에 DATABASE_URL이 필요합니다.")
+    db_max = max_loaded_date(database_url)
+    csv_max = csv_result.max_date
+    if csv_max is None or (db_max is not None and db_max >= csv_max):
+        return None
+    loaded = load_postgres(database_url, csv_path, validate_csv(csv_path, require_bom=False))
+    return {"reason": "db_behind_csv", "dbMaxBefore": db_max,
+            "csvMax": csv_max, **loaded}
+
+
+def _run_collect(args: argparse.Namespace) -> int:
+    # 2026-01-01 하한을 옵션으로 바꿨다 (2026-08-27).
+    #   원래 이 가드는 "2015~2025 는 MAFRA API 로 받은 기준 데이터이니 건드리지 말라"
+    #   는 뜻이었다. 그런데 그 기준 데이터에는 **포장 규격이 없다** — 하루치가
+    #   (날짜x시장x품목x등급) 한 행으로 뭉쳐 서로 다른 상품이 한 평균에 섞였다.
+    #   katOrigin API 는 2015년치도 규격까지 그대로 준다 (2015-08-27 실측:
+    #   "배추 고냉지배추 그물망 10.000kg 6,500원"). 전 구간 재수집이 가능하다.
+    #   기본값은 그대로 두어 실수로 과거를 덮지 않게 하고, --allow-backfill 로만 연다.
+    if args.start < date(2026, 1, 1) and not args.allow_backfill:
+        raise RuntimeError(
+            "2026-01-01 이전을 받으려면 --allow-backfill 이 필요합니다.\n"
+            "  기존 2015~2025 구간은 MAFRA API 기준 데이터이며 규격 정보가 없습니다.\n"
+            "  재수집하면 규격별로 행이 갈라지므로 자연키 v3 로 먼저 옮겨야 합니다.")
+    if args.start > args.end:
+        raise RuntimeError("시작일이 종료일보다 늦습니다.")
+    if args.replace_range and args.base_csv is None:
+        raise RuntimeError("--replace-range에는 --base-csv가 필요합니다.")
+    collector = _collector(args)
+    rows, quality = collector.collect_range(
+        args.start,
+        args.end,
+        include_sundays=args.include_sundays,
+        force=args.force,
+    )
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    range_stem = f"auction_prices_{args.start.isoformat()}_{args.end.isoformat()}"
+    range_paths = _artifact_paths(args.output_dir, range_stem)
+    write_csv_atomic(range_paths["db"], rows)
+    range_summary = _prepare_artifacts(range_paths, generated_from="data.go.kr incremental collection")
+
+    result: dict[str, object] = {
+        "status": "ok",
+        "command": "collect",
+        "range": [args.start.isoformat(), args.end.isoformat()],
+        "quality": quality,
+        "artifacts": range_summary,
+        "apiCalls": collector.client.api_calls,
+        "retries": collector.client.retries,
+        "rateLimitRemaining": collector.client.rate_limit_remaining,
+    }
+    load_path = range_paths["db"]
+    if args.replace_range:
+        assert args.base_csv is not None
+        current_paths = _artifact_paths(args.output_dir, "auction_prices_current")
+        merge_csv(
+            args.base_csv,
+            current_paths["db"],
+            rows,
+            replace_start=args.start.isoformat(),
+            replace_end=args.end.isoformat(),
+        )
+        current_summary = _prepare_artifacts(current_paths, generated_from=str(args.base_csv))
+        result["currentArtifacts"] = current_summary
+        load_path = range_paths["db"]
+    postgres_result = _maybe_load_postgres(args, load_path)
+    if postgres_result is not None:
+        result["postgres"] = postgres_result
+    _json_log(result)
+    return 0
+
+
+def _run_update(args: argparse.Namespace) -> int:
+    current_paths = _artifact_paths(args.output_dir, "auction_prices_current")
+    base_path = current_paths["db"] if current_paths["db"].exists() else args.seed_csv
+    base_result = validate_csv(base_path, require_bom=False)
+    if base_result.max_date is None:
+        raise RuntimeError("기준 CSV에 데이터 행이 없습니다.")
+    if base_result.max_date < "2025-12-31":
+        raise RuntimeError(f"기준 CSV의 마지막 날짜가 2025-12-31보다 이릅니다: {base_result.max_date}")
+    last_completed = _read_completed_date(args.state_file)
+    base_max_date = date.fromisoformat(base_result.max_date)
+    start = max(base_max_date, last_completed or base_max_date) + timedelta(days=1)
+    end = args.through or date.today()
+    if args.through is None:
+        end = datetime.now(ZoneInfo("Asia/Seoul")).date() - timedelta(days=1)
+
+    if start > end:
+        if base_path != current_paths["db"]:
+            merge_csv(base_path, current_paths["db"], [])
+        summary = _prepare_artifacts(current_paths, generated_from=str(base_path))
+        completed = max(base_max_date, last_completed or base_max_date, end)
+        _write_completed_state(args.state_file, completed, summary)
+        result: dict[str, object] = {
+            "status": "up_to_date", "command": "update", "artifacts": summary,
+        }
+        # ── DB 가 뒤처져 있으면 여기서 따라잡는다 (2026-08-28 추가) ──
+        #   `merge_csv` 가 CSV 를 먼저 쓰고 그다음 적재한다. 적재가 실패하면
+        #   **CSV 만 앞서 가고 DB 는 뒤처진 채 갈라진다.** 그러면 다음 실행은
+        #   CSV 기준으로 "받을 게 없다"고 판단해 이 분기로 들어오는데,
+        #   여기에 적재가 없어서 **차이가 저절로는 영영 안 메워졌다.**
+        #
+        #   실제 사고: 08-28 09:00 에 250행이 CSV 에만 들어가고 DB 에서 빠졌다.
+        #   `update` 를 다시 돌려도 up_to_date 라 손을 못 댔고, 사람이 직접
+        #   run 파일을 찾아 적재해야 했다.
+        #
+        #   두 쪽 최신일을 대보고 뒤처졌을 때만 현재 CSV 전체를 다시 싣는다.
+        #   UPSERT 라 여러 번 넣어도 같은 결과다. 평소에는 날짜 비교 한 번으로
+        #   끝나므로 비용이 없다.
+        if args.load_postgres:
+            recovered = _recover_postgres(args, current_paths["db"], base_result)
+            if recovered is not None:
+                result["postgresRecovery"] = recovered
+        _json_log(result)
+        return 0
+
+    collector = _collector(args)
+    rows, quality = collector.collect_range(
+        start,
+        end,
+        include_sundays=args.include_sundays,
+        force=args.force,
+    )
+    run_dir = args.output_dir / "runs"
+    run_paths = _artifact_paths(run_dir, f"auction_prices_{start.isoformat()}_{end.isoformat()}")
+    write_csv_atomic(run_paths["db"], rows)
+    run_summary = _prepare_artifacts(run_paths, generated_from="data.go.kr incremental collection")
+
+    merge_csv(base_path, current_paths["db"], rows)
+    current_summary = _prepare_artifacts(current_paths, generated_from=str(base_path))
+    result: dict[str, object] = {
+        "status": "ok",
+        "command": "update",
+        "range": [start.isoformat(), end.isoformat()],
+        "quality": quality,
+        "incrementArtifacts": run_summary,
+        "currentArtifacts": current_summary,
+        "apiCalls": collector.client.api_calls,
+        "retries": collector.client.retries,
+        "rateLimitRemaining": collector.client.rate_limit_remaining,
+    }
+    postgres_result = _maybe_load_postgres(args, run_paths["db"])
+    if postgres_result is not None:
+        result["postgres"] = postgres_result
+    _write_completed_state(args.state_file, end, current_summary)
+    _json_log(result)
+    return 0
+
+
+def _run_validate(args: argparse.Namespace) -> int:
+    result = validate_csv(args.csv)
+    _json_log({"status": "ok", "command": "validate", **result.to_dict()})
+    return 0
+
+
+def _run_prepare(args: argparse.Namespace) -> int:
+    paths = {
+        "db": args.db_csv,
+        "excel": args.excel_csv,
+        "manifest": args.manifest,
+        "sql": args.sql,
+        "bundle": args.bundle,
+    }
+    summary = _prepare_artifacts(paths, generated_from=args.generated_from)
+    _json_log({"status": "ok", "command": "prepare", "artifacts": summary})
+    return 0
+
+
+def _add_collection_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--cache-dir", type=Path, default=Path("work/auction_collector_cache"))
+    parser.add_argument("--items-config", type=Path)
+    parser.add_argument("--concurrency", type=int, default=int(os.environ.get("DATE_CONCURRENCY", "2")))
+    parser.add_argument("--page-size", type=int, default=10_000)
+    parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--max-retries", type=int, default=6)
+    parser.add_argument("--endpoint", default="https://apis.data.go.kr/B552845/katOrigin/trades")
+    parser.add_argument("--include-sundays", action="store_true")
+    parser.add_argument("--force", action="store_true", help="일자별 캐시를 무시하고 API를 다시 호출")
+    parser.add_argument("--load-postgres", action="store_true")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="auction-collector", description="공영도매시장 경매가 증분 수집기")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    update = subparsers.add_parser("update", help="기준 CSV 다음 날부터 어제까지 증분 수집")
+    _add_collection_options(update)
+    update.add_argument("--seed-csv", type=Path, default=Path("outputs/auction_prices_2015_2025_db.csv"))
+    update.add_argument("--state-file", type=Path, default=Path("work/auction_collector_state.json"))
+    update.add_argument("--through", type=_parse_date, help="기본값은 한국시간 기준 어제")
+    update.add_argument("--local-today", action="store_true", help=argparse.SUPPRESS)
+    update.set_defaults(handler=_run_update)
+
+    collect = subparsers.add_parser("collect", help="지정한 기간 수집")
+    _add_collection_options(collect)
+    collect.add_argument("--allow-backfill", action="store_true",
+                         help="2026-01-01 이전 구간 재수집 허용 (규격별 재적재용)")
+    collect.add_argument("--start", required=True, type=_parse_date)
+    collect.add_argument("--end", required=True, type=_parse_date)
+    collect.add_argument("--replace-range", action="store_true")
+    collect.add_argument("--base-csv", type=Path)
+    collect.set_defaults(handler=_run_collect)
+
+    validate = subparsers.add_parser("validate", help="CSV 구조·인코딩·중복 검증")
+    validate.add_argument("csv", type=Path)
+    validate.set_defaults(handler=_run_validate)
+
+    prepare = subparsers.add_parser("prepare", help="DB CSV에서 Excel 확인본·manifest·ZIP 생성")
+    prepare.add_argument("--db-csv", type=Path, required=True)
+    prepare.add_argument("--excel-csv", type=Path, required=True)
+    prepare.add_argument("--manifest", type=Path, required=True)
+    prepare.add_argument("--sql", type=Path, required=True)
+    prepare.add_argument("--bundle", type=Path, required=True)
+    prepare.add_argument("--generated-from", default="existing validated dataset")
+    prepare.set_defaults(handler=_run_prepare)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    load_dotenv(Path(".env"))
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        code = int(args.handler(args))
+    except (RuntimeError, ValueError, OSError, CsvValidationError) as error:
+        _json_log({"status": "error", "command": args.command, "message": str(error)}, error=True)
+        raise SystemExit(1) from error
+    raise SystemExit(code)

@@ -1,0 +1,8 @@
+[
+  {"large_code": "10", "middle_code": "01", "item_code": "1001", "item_name": "배추"},
+  {"large_code": "11", "middle_code": "01", "item_code": "1101", "item_name": "무"},
+  {"large_code": "12", "middle_code": "01", "item_code": "1201", "item_name": "양파"},
+  {"large_code": "12", "middle_code": "07", "item_code": "1207", "item_name": "건고추"},
+  {"large_code": "12", "middle_code": "09", "item_code": "1209", "item_name": "마늘"}
+]
+

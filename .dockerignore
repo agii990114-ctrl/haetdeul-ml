@@ -1,0 +1,21 @@
+# 상자에 넣지 않을 것 — 없으면 이미지가 500MB 넘게 커진다
+**/outputs/
+**/work/
+**/auction_collector_cache/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/*.egg-info/
+*.csv
+**/*.csv
+**/*.zip
+**/*.xlsx
+진행기록/batch_logs/
+ops_*_old_*/
+model_*/
+대시보드/
+참고/
+context/
+DB/
+.git/
+.env
