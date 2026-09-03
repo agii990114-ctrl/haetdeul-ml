@@ -211,7 +211,52 @@ def load(path, *, target=None, anchor=None):
     for c in CAT:
         if c in df:
             df[c] = df[c].astype("category")
+
+    _say_items(df)
     return df
+
+
+def _say_items(df):
+    """읽은 자료의 품목을 매번 찍는다 (2026-09-03).
+
+    ## 왜 이걸 찍나
+
+    `exp_quantile.build()` 가 품목 필터 없이 학습표를 통째로 읽고 있었다.
+    **마늘이 학습행의 24% 였고 아무도 몰랐다.** 그 도구로 낸 판정을
+    전부 되돌려야 했다.
+
+    마늘은 모델 대상이 아니다 (CLAUDE.md 5.4 · 백로그 D-06).
+    ACF 0.574 로 어수선해 **같이 배우면 깨끗한 세 품목이 나빠진다**
+    (배추 경락 0.2288 -> 0.2233).
+
+    `load()` 는 자료를 읽기만 하고 거르지 않는다 — 거르는 것은 부르는
+    쪽 몫이다. 그러니 **읽은 것이 무엇인지는 여기서 찍어 준다.**
+    거르는 것을 잊으면 자기 출력에 마늘이 보인다.
+    """
+    if _say_items.done or "item_nm" not in df:
+        return
+    _say_items.done = True
+    cnt = df["item_nm"].astype(str).value_counts()
+    parts = ["%s %s" % (k, format(int(v), ",")) for k, v in cnt.items()]
+    print("  [읽음] " + " · ".join(parts))
+    extra = [k for k in cnt.index if k not in DEFAULT_ITEMS]
+    if extra:
+        print("  [주의] %s 은(는) 모델 대상이 아닙니다. 거르는지 확인하세요."
+              % " · ".join(extra))
+
+
+_say_items.done = False
+
+
+def keep_items(df, items=None):
+    """학습 품목만 남긴다. 부르는 쪽이 잊지 않도록 만들어 둔 자리."""
+    keep = list(items) if items is not None else list(DEFAULT_ITEMS)
+    n0 = len(df)
+    out = df[df["item_nm"].astype(str).isin(keep)].copy()
+    print("  [학습 품목] %s  (%s행 중 %s행 · 뺀 행 %s)"
+          % (", ".join(keep), format(n0, ","), format(len(out), ","),
+             format(n0 - len(out), ",")))
+    return out
 
 
 MODEL_FORMAT = 1        # 번들 형식 버전. predict.py 가 검사한다
