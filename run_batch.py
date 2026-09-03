@@ -839,23 +839,99 @@ def do_ml(name, conn, log, a, today):
             #   ★ 점 예측이 다르면 그건 사고다. 구간만 바뀌어야 한다.
             d = (m.pred_prc_o - m.pred_prc_q).abs()
             diff = int((d > 1e-6).sum())
+
+            #   ★ 폭이 무엇에 반응하는지 같이 남긴다 (2026-09-03 추가).
+            #
+            #   매입 파트가 물었다 — "폭이 넓으니 보수안" 을 쓰려면
+            #   **그 폭이 무엇에 반응하는지** 알아야 설명이 된다고.
+            #
+            #   실제로 방향은 맞는데 크기가 안 맞았다 (기준일 2026-09-02) —
+            #
+            #       배추  최근7일 흔들림 16.8%  ->  폭 +12.8%
+            #       무    최근7일 흔들림 12.5%  ->  폭 +29.1%   덜 흔들렸는데 더 넓음
+            #
+            #   흔들림 하나로는 설명이 안 된다. 후보를 같이 적어두고
+            #   2주 뒤에 무엇과 붙는지 본다. **지금 안 적으면 그때 못 잰다.**
+            drv = {}
+            pif = out / ("pi_%s.csv" % kind)
+            if pif.exists():
+                try:
+                    pi = _pd.read_csv(pif, encoding="utf-8-sig")
+                    pi = pi[pi.lead_biz_d == 1]
+                    for _, r in pi.iterrows():
+                        def rt(c1, c2):
+                            #   두 값의 비. 없으면 남기지 않는다
+                            try:
+                                a1, a2 = float(r[c1]), float(r[c2])
+                                return round(a1 / a2 - 1.0, 4) if a2 else None
+                            except Exception:                 # noqa: BLE001
+                                return None
+                        try:
+                            sd7 = round(float(r["auc_prc_std7"])
+                                        / float(r["auc_prc_avg7"]), 4)
+                        except Exception:                     # noqa: BLE001
+                            sd7 = None
+                        drv[r["item_nm"]] = dict(
+                            #   흔들림: 최근 7일 표준편차 / 7일 평균
+                            vol7=sd7,
+                            #   급변: 어제값이 7일 평균에서 얼마나 떨어졌나
+                            jump=rt("auc_prc_lag1", "auc_prc_avg7"),
+                            #   반입량 변화: 어제 물량 / 7일 평균
+                            arr=rt("arr_qty_lag1", "arr_qty_avg7"),
+                            #   등급 스프레드 (상품성이 갈리는 정도)
+                            spread=(round(float(r["auc_prc_spread_lag1"]), 4)
+                                    if "auc_prc_spread_lag1" in pi.columns
+                                    else None))
+                except Exception as e:                        # noqa: BLE001
+                    notes.append("%s 입력지표 못읽음(%s)" % (kind, type(e).__name__))
+
             for it, g in m.groupby("item_nm"):
                 wo = ((g.pred_hi_o - g.pred_lo_o) / g.pred_prc_o).mean()
                 wq = ((g.pred_hi_q - g.pred_lo_q) / g.pred_prc_q).mean()
-                rows.append(dict(run_dt=today.isoformat(),
-                                 base_dt=str(g.base_dt.iloc[0]),
-                                 target=kind, item_nm=it, n=len(g),
-                                 pred_diff_rows=diff,
-                                 width_ops=round(float(wo), 4),
-                                 width_q=round(float(wq), 4)))
+                row = dict(run_dt=today.isoformat(),
+                           base_dt=str(g.base_dt.iloc[0]),
+                           target=kind, item_nm=it, n=len(g),
+                           pred_diff_rows=diff,
+                           width_ops=round(float(wo), 4),
+                           width_q=round(float(wq), 4))
+                row.update(drv.get(it, dict(vol7=None, jump=None,
+                                            arr=None, spread=None)))
+                rows.append(row)
             notes.append("%s 비교 %d행 · 점예측 차이 %d행" % (kind, len(m), diff))
         if rows:
             SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
-            new = not SHADOW_LOG.exists()
-            with open(SHADOW_LOG, "a", encoding="utf-8-sig", newline="") as f:
-                w = _csv.DictWriter(f, fieldnames=list(rows[0]))
-                if new:
+            #   ★ 컬럼이 늘면 옛 파일과 머리글이 안 맞는다. 그대로 이어
+            #     붙이면 **줄이 어긋난다.** 옛 줄을 읽어 빈 칸으로 채워
+            #     통째로 다시 쓴다 (2026-09-03. 지표 4개를 더하면서 겪음).
+            cols = list(rows[0])
+            old_rows = []
+            if SHADOW_LOG.exists():
+                with open(SHADOW_LOG, encoding="utf-8-sig", newline="") as f:
+                    old_rows = list(_csv.DictReader(f))
+            need_rewrite = bool(old_rows) and list(old_rows[0]) != cols
+            if need_rewrite:
+                notes.append("그림자 기록 컬럼 %d -> %d 로 늘려 다시 씀"
+                             % (len(old_rows[0]), len(cols)))
+            #   ★ 같은 (실행일·기준일·타겟·품목) 이 이미 있으면 지우고
+            #     새 것으로 바꾼다. 배치를 하루에 두 번 돌려도 줄이 안 불어난다.
+            #     (2026-09-03 실제로 겪음 — 같은 날 줄이 두 벌 생겼다)
+            key = {(r["run_dt"], r["base_dt"], r["target"], r["item_nm"])
+                   for r in rows}
+            before = len(old_rows)
+            old_rows = [r for r in old_rows
+                        if (r.get("run_dt"), r.get("base_dt"),
+                            r.get("target"), r.get("item_nm")) not in key]
+            if len(old_rows) != before:
+                need_rewrite = True
+                notes.append("같은 날 옛 줄 %d개를 새 것으로 바꿈"
+                             % (before - len(old_rows)))
+            mode = "w" if (need_rewrite or not SHADOW_LOG.exists()) else "a"
+            with open(SHADOW_LOG, mode, encoding="utf-8-sig", newline="") as f:
+                w = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+                if mode == "w":
                     w.writeheader()
+                    for r in old_rows:
+                        w.writerow({c: r.get(c, "") for c in cols})
                 w.writerows(rows)
             bad = sum(r["pred_diff_rows"] for r in rows)
             if bad:

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import re
 from pathlib import Path
 
 import numpy as np
@@ -304,17 +305,86 @@ def news_table():
     return d.sort_values("dt")
 
 
-def news_lines(nd, base_dt, days=21, cap=12):
+#   ★ 제목 글자 안의 날짜를 가린다 (2026-09-03 발견).
+#
+#   기사 **날짜**는 "며칠 전" 으로 잘 가렸는데 **제목 글자**를 안 가렸다.
+#   실측: 30블록 중 18개에 아래 네 제목이 들어가 있었다.
+#
+#       [2026년 7월 2째주] 경락가격 급등 품목 - ...
+#       농협경남본부, 2026년산 함양 양파 대만 첫 수출 선적
+#       7월 돼지 도매가격 ... 전망
+#       "고객을 최우선으로"...41주년 맞은 가락시장   (개장 1985 -> 2026)
+#
+#   연도·월·주차를 주면 기준일을 일주일 안으로 찍을 수 있다.
+#   **날짜를 가리는 것이 이 실험의 전제**이므로 실험 자체가 무너진다.
+#
+#   가리는 것: 절대 달력 표시(연도·월 숫자·주차·주년)
+#   안 가리는 것: 계절 말(김장·고랭지·햇양파) — 김장철·기온은 이미
+#                 feature 로 주고 있어 누출이 아니다
+_DATE_MASK = [
+    (re.compile(r"\[\s*20\d\d년[^\]]*\]"), "[최근]"),
+    (re.compile(r"20\d\d년산"), "올해산"),
+    (re.compile(r"20\d\d년도?"), "○○○○년"),
+    (re.compile(r"20\d\d"), "○○○○"),
+    (re.compile(r"(?<![\d])\d{1,2}\s*월"), "○월"),
+    (re.compile(r"\d+\s*째\s*주"), "○째주"),
+    (re.compile(r"\d+\s*주년"), "○○주년"),
+]
+
+
+def mask_date(t: str) -> str:
+    for rx, rep in _DATE_MASK:
+        t = rx.sub(rep, t)
+    return t
+
+
+#   ★ 값·수급 기사만 남기는 규칙 (2026-09-03 추가 · --news-signal).
+#
+#   모아온 기사 고유 제목 44개 중 값·수급을 말하는 것은 11개뿐이고
+#   나머지 33개는 농협 홍보·행사 기사였다.
+#
+#       농협충남세종본부, 양파 착한소비 캠페인 펼쳐
+#       목포무안신안축협, 양파 수확철 농촌 일손돕기 실시
+#
+#   홍보물째로만 재면, 나빠도 **"뉴스가 쓸모없다"** 인지
+#   **"우리가 모은 게 홍보물이라 그렇다"** 인지 못 가린다. 둘 다 돌린다.
+#
+#   ★ 손으로 고르지 않는다. 규칙을 적고 그 결과를 그대로 쓴다.
+#     손으로 고르면 "뉴스가 도움 되나" 가 아니라
+#     "내가 고른 뉴스가 도움 되나" 를 재게 된다.
+_ITEM = re.compile(r"배추|양파|(?<![가-힣])무(?![가-힣])|월동무|고랭지|가락시장|경락")
+_SIGNAL = re.compile(
+    r"전망|가격|시세|값|상승|하락|약세|강세|급등|급락|"
+    r"증가|감소|줄|늘|과잉|부족|"
+    r"출하|수급|재배면적|작황|생산|반입|저장|물량|"
+    r"폭염|장마|태풍|한파|가뭄|고온|저온|"
+    r"병해|무름병|시들음병|품질|생육|차질|폐기|"
+    r"수입산|비축|계약재배")
+_PR = re.compile(
+    r"캠페인|소비촉진|소비 촉진|착한소비|착한 소비|기부|일손돕기|일손 돕기|"
+    r"직거래장터|품평회|워크숍|성료|개최|실시|전개|동참|나섰|나서|"
+    r"수출|기증|후원|봉사|축제|홍보|이벤트|할인|공동구매|보급|단속|"
+    r"예방|화재|비전|선포|위촉|협약|간담회|쾌척|지원|상생장터|구매")
+
+
+def is_signal(t: str) -> bool:
+    """우리 품목·시장을 말하고 · 값/수급/기상/병해를 말하고 · 홍보가 아닌 것."""
+    return bool(_ITEM.search(t)) and bool(_SIGNAL.search(t)) and not _PR.search(t)
+
+
+def news_lines(nd, base_dt, days=21, cap=12, signal_only=False):
     """기준일 직전 며칠치 기사 제목. ★ 날짜는 '며칠 전' 으로만 쓴다."""
     b = pd.Timestamp(base_dt).normalize()
     g = nd[(nd["dt"] < b) & (nd["dt"] >= b - pd.Timedelta(days=days))]
+    if signal_only and not g.empty:
+        g = g[g.title.map(lambda t: is_signal(mask_date(t)))]
     if g.empty:
         return ["", f"### 최근 {days}일 농업 전문지 기사", "",
                 "(관련 기사 없음)"]
     out = ["", f"### 최근 {days}일 농업 전문지 기사 ({len(g)}건)", "",
            "| 며칠 전 | 제목 |", "|---|---|"]
     for _, r in g.sort_values("dt", ascending=False).head(cap).iterrows():
-        out.append(f"| {int((b - r['dt']).days)} | {r['title']} |")
+        out.append(f"| {int((b - r['dt']).days)} | {mask_date(r['title'])} |")
     return out
 
 
@@ -328,7 +398,7 @@ def pick(va, n):
 
 
 def make(va, dates, tgt, anc, out, ser=None, hist=0, fc=None, en=False,
-         items=None, nd=None):
+         items=None, nd=None, news_signal=False):
     L = []
     if en:
         L.append(HEAD_EN)
@@ -409,7 +479,7 @@ B01|812,818,825,830,833,840,845,848,850,855,858,860,862,865,868,870,872,875
             if ser is not None and hist:
                 L += hist_lines(ser, it, d, hist)
             if nd is not None:
-                L += news_lines(nd, d)
+                L += news_lines(nd, d, signal_only=news_signal)
             L.append("\n### Values that change by horizon\n" if en
                      else "\n### 리드타임별로 달라지는 값\n")
             cols = [c for c in VARY if c in g.columns]
@@ -528,7 +598,10 @@ def score(va, blocks, ans_path, tgt, anc, csv, alpha):
             k = (r.base_dt, it, int(r.lead_biz_d))
             if k not in look:
                 continue
-            rows.append(dict(block=bid, base_dt=r.base_dt, item_nm=it,
+            rows.append(dict(block=bid, base_dt=r.base_dt,
+                             #   ★ 오염 검사에 쓴다. 리드타임이 아니라
+                             #     **대상일**로 갈라야 지식 시점이 보인다.
+                             target_dt=str(r.target_dt)[:10], item_nm=it,
                              lead=int(r.lead_biz_d), actual=float(r[tgt]),
                              llm=v[i], lgbm=look[k], anchor=float(r[anc])))
     return pd.DataFrame(rows)
@@ -590,6 +663,53 @@ def report(d):
     print("    LLM       평균 %.1f%% · 중앙 %.1f%%" % (mv.mean() * 100, mv.median() * 100))
     print("    LightGBM  평균 %.1f%% · 중앙 %.1f%%" % (mv2.mean() * 100, mv2.median() * 100))
 
+    #   ★ 답한 쪽이 정답을 이미 알고 있었나 (2026-09-03 추가).
+    #
+    #   실제로 걸렸다. 어떤 답이 앵커 대비 +43.3% 로 나왔는데, **맞혀야 하는
+    #   날**로 갈라 보니 칼같이 끊겼다 —
+    #
+    #       대상일 ~8/20   LLM 오차 13.1% · 앵커 21.8%   ->  +40.0%
+    #       대상일 8/21~   LLM 오차 16.2% · 앵커 11.1%   ->  -45.8%
+    #
+    #   ★ 결정적인 것은 **쉬운 날에 더 틀렸다**는 점이다. 8/21 이후는 값이
+    #     조용해 앵커 오차가 11.1% 로 낮은 구간인데 거기서 더 못했다.
+    #     쉬운 날에 더 틀리는 예측기는 없다. 정보가 끊긴 자리로 읽는 게 맞다.
+    #
+    #   같은 날 같은 블록으로 받은 다른 답은 상관 0.324 (우리 LightGBM 0.323)
+    #   였고 이 낭떠러지가 없었다. 그쪽이 정상이다.
+    #
+    #   리드타임으로 갈라서는 안 보인다. **대상일**로 갈라야 보인다.
+    if "target_dt" in d.columns:
+        e_l = (d.llm - d.actual).abs() / d.actual
+        e_a = (d.anchor - d.actual).abs() / d.actual
+        cut = d.target_dt.max()
+        best = None
+        for c in sorted(d.target_dt.unique())[3:-3]:
+            lo, hi = d.target_dt <= c, d.target_dt > c
+            if lo.sum() < 30 or hi.sum() < 15:
+                continue
+            gap = ((1 - e_l[lo].mean() / e_a[lo].mean())
+                   - (1 - e_l[hi].mean() / e_a[hi].mean()))
+            if best is None or gap > best[1]:
+                best, cut = (c, gap), c
+        if best:
+            c, gap = best
+            lo, hi = d.target_dt <= c, d.target_dt > c
+            print("\n  [정답을 알고 있었나] 대상일로 갈라 봅니다")
+            print("    %s 이전  %3d행  LLM %5.1f%% · 앵커 %5.1f%%  ->  %+6.1f%%"
+                  % (c, lo.sum(), e_l[lo].mean() * 100, e_a[lo].mean() * 100,
+                     (1 - e_l[lo].mean() / e_a[lo].mean()) * 100))
+            print("    %s 이후  %3d행  LLM %5.1f%% · 앵커 %5.1f%%  ->  %+6.1f%%"
+                  % (c, hi.sum(), e_l[hi].mean() * 100, e_a[hi].mean() * 100,
+                     (1 - e_l[hi].mean() / e_a[hi].mean()) * 100))
+            if gap > 0.30:
+                print("    ★ 갈라진 폭 %.0f%%p. **정답을 알았을 가능성이 큽니다.**"
+                      % (gap * 100))
+                print("      답한 쪽의 지식 시점 · 웹 검색 여부를 확인하세요.")
+                print("      이 답으로 낸 수치는 기록하지 마세요.")
+            else:
+                print("    갈라진 폭 %.0f%%p — 정상 범위입니다" % (gap * 100))
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="LLM 예측 시험 프롬프트/채점")
@@ -603,20 +723,33 @@ def main() -> int:
                          "(2026-09-02 실측: 배추 27블록 연속에서 발생)")
     ap.add_argument("--items", nargs="+", default=None,
                     help="이 품목만 낸다. 예: --items 배추. "
-                         "★ 한 품목만 하면 같은 블록 수로 기준일을 3배 늘릴 수 있다 "
-                         "— 표본이 얇은 것이 지금 제일 큰 약점이다")
+                         "★ 한 품목만 하면 같은 블록 수로 기준일을 3배 늘릴 수 있다. "
+                         "표본이 얇은 것이 지금 제일 큰 약점이다")
     ap.add_argument("--en", action="store_true",
-                    help="영어판. ★ 블록·숫자·순서는 완전히 같고 말만 영어다 "
-                         "— 그래야 언어 효과만 잰다")
+                    help="영어판. ★ 블록·숫자·순서는 완전히 같고 말만 영어다. "
+                         "그래야 언어 효과만 잰다")
     ap.add_argument("--news", action="store_true",
                     help="농업 전문지 기사 제목을 붙인다. "
                          "★ 기준일보다 엄격히 이전 기사만 들어갑니다")
+    ap.add_argument("--news-signal", action="store_true",
+                    help="--news 와 같이 쓴다. 값·수급 기사만 남기고 "
+                         "농협 홍보·행사 기사를 뺀다 (고유 44 -> 11개). "
+                         "★ --news 와 짝으로 돌려 두 결과를 견준다. "
+                         "홍보물째로만 재면 '뉴스가 쓸모없다' 인지 "
+                         "'모은 게 홍보물이라 그렇다' 인지 못 가린다")
     ap.add_argument("--fcst", action="store_true",
                     help="기상청 중기예보(주산지 D+3~D+10 기온)를 붙인다. "
                          "★ 기준일에 발표된 것만 들어갑니다")
     ap.add_argument("--hist", type=int, default=0,
                     help="경락가 원자료를 몇 거래일치 붙일지 (0=안 붙임). "
                          "★ base_dt 보다 엄격히 이전 날만 들어갑니다")
+    ap.add_argument("--dates", default=None,
+                    help="기준일을 직접 지정한다 (쉼표로 구분). --n-dates 대신. "
+                         "★ 채점할 때는 반드시 이걸 쓴다. --from/--to 로 고르면 "
+                         "데이터가 조금만 바뀌어도 다른 날이 뽑혀 블록 번호가 "
+                         "딴 날짜에 붙는다 (2026-09-03 실제로 겪음: 30블록 중 "
+                         "27개가 어긋났고 채점값이 무효가 됐다). "
+                         "날짜는 정답 키 CSV 에 적혀 있다")
     ap.add_argument("--out", default="../../../실험결과/llm_prompt.md")
     ap.add_argument("--score", default=None, help="LLM 답 파일 (채점만)")
     a = ap.parse_args()
@@ -627,7 +760,17 @@ def main() -> int:
     print("[구간] %s ~ %s · 기준일 %d개 · %d행"
           % (a.d_from, a.d_to, va.base_dt.nunique(), len(va)))
 
-    dates = pick(va, a.n_dates)
+    if a.dates:
+        #   ★ 직접 지정. 있는 날만 쓰고, 없는 날은 바로 알린다.
+        want = [x.strip() for x in a.dates.split(",") if x.strip()]
+        have = set(str(x)[:10] for x in va.base_dt.unique())
+        miss = [x for x in want if x not in have]
+        if miss:
+            sys.exit("이 기준일이 자료에 없습니다: %s" % ", ".join(miss))
+        dates = [x for x in sorted(va.base_dt.unique()) if str(x)[:10] in want]
+        print("  [기준일] 직접 지정 %d개" % len(dates))
+    else:
+        dates = pick(va, a.n_dates)
     ser = daily_series() if a.hist else None
     if ser:
         print("  [원자료] 일별 경락가 " + " · ".join(
@@ -641,7 +784,7 @@ def main() -> int:
               % (format(len(nd), ","), nd["dt"].min().date(),
                  nd["dt"].max().date()))
     blocks, key = make(va, dates, tgt, anc, a.out, ser, a.hist, fc, a.en,
-                       a.items, nd)
+                       a.items, nd, a.news_signal)
     print("[프롬프트] 블록 %d개 → %s" % (len(blocks), a.out))
     print("           정답 키 → %s" % str(a.out).replace(".md", "_key.csv"))
     p = Path(a.out)
