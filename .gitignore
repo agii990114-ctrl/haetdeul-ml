@@ -93,3 +93,9 @@ context/
 #     위 규칙에 안 걸렸다. zip 을 mac 에서 풀면 생긴다.
 __MACOSX/
 ._*
+
+# 백업본 (편집 전 원본) - 로컬에만 둔다
+*.bak_*
+
+# 수집기 캐시
+**/auction_collector_cache/
