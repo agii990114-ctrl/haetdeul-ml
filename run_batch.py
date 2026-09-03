@@ -60,7 +60,19 @@ MODELS = {"auc": "ops_auc", "whsl": "ops_whsl", "rtl": "ops_rtl"}
 #       **정확히 일치**만 받으므로, 이름을 바꿔 적재하면 저쪽에서 조용히
 #       0건이 된다. 그래서 적재 자체를 안 한다
 #   며칠 돌려 문제가 없으면 번들을 같은 이름으로 교체한다(이름은 안 바꾼다).
-SHADOW = {"auc": "ops_auc_q", "whsl": "ops_whsl_q"}
+#   ★ 교체가 끝나 방향이 뒤집혔다 (2026-09-03 12:30).
+#
+#   교체 전에는 운영이 고정표였고 분위수 번들을 그림자로 돌렸다.
+#   지금은 **운영이 분위수**다. 그대로 두면 같은 것끼리 비교해
+#   width_ops 와 width_q 가 똑같이 나온다 — 아무것도 안 재는 상태다.
+#   실제로 그렇게 6줄이 쌓였다.
+#
+#   이제 **교체 전 번들(고정표)** 을 그림자로 돌린다. 컬럼 뜻은
+#   width_ops = 지금 운영(분위수) · width_q = 교체 전(고정표) 이다.
+#   ★ 컬럼 이름은 안 바꾼다 — 3일치 기록과 이어져야 한다.
+#   ★ 폴더 이름에 한글을 쓰지 않는다. LightGBM 이 한글 경로를 못 연다
+#     (2026-09-03 실측: LightGBMError: Could not open ...).
+SHADOW = {"auc": "ops_auc_pre_20260903", "whsl": "ops_whsl_pre_20260903"}
 SHADOW_LOG = ROOT / "실험결과" / "shadow_quantile.csv"
 
 # 앵커가 조사일 기준 며칠 이상 밀리면 추론을 멈출지
@@ -825,6 +837,16 @@ def do_ml(name, conn, log, a, today):
             if not ok:
                 notes.append("%s 추론 실패" % kind)
                 continue
+            #   운영 번들이 분위수인지 meta 로 본다. 이름이나 날짜로
+            #   짐작하지 않는다 — 번들이 스스로 말하게 한다.
+            ops_is_q = False
+            try:
+                import json as _json
+                mj = _json.loads((KIT / ("ops_%s" % kind) / "meta.json")
+                                 .read_text(encoding="utf-8"))
+                ops_is_q = bool(mj.get("quantile_models"))
+            except Exception:                                 # noqa: BLE001
+                pass
             base_f = out / ("pred_%s.csv" % kind)
             if not base_f.exists():
                 notes.append("%s 운영 예측 없음" % kind)
@@ -837,6 +859,8 @@ def do_ml(name, conn, log, a, today):
                 notes.append("%s 맞춘 행 0" % kind)
                 continue
             #   ★ 점 예측이 다르면 그건 사고다. 구간만 바뀌어야 한다.
+            #     (교체 전/후 번들은 트리 수와 앵커 α 가 같아서 가격이 같다.
+            #      달라지면 둘 중 하나가 잘못 바뀐 것이다)
             d = (m.pred_prc_o - m.pred_prc_q).abs()
             diff = int((d > 1e-6).sum())
 
@@ -888,12 +912,28 @@ def do_ml(name, conn, log, a, today):
             for it, g in m.groupby("item_nm"):
                 wo = ((g.pred_hi_o - g.pred_lo_o) / g.pred_prc_o).mean()
                 wq = ((g.pred_hi_q - g.pred_lo_q) / g.pred_prc_q).mean()
+                #   ★ 컬럼 뜻이 교체 전후로 뒤집히지 않게 한다 (2026-09-03).
+                #
+                #   교체 전  운영=고정표 · 그림자=분위수
+                #   교체 후  운영=분위수 · 그림자=고정표   <- 방향이 뒤집혔다
+                #
+                #   같은 컬럼이 날짜에 따라 다른 것을 가리키면 2주 뒤에
+                #   읽을 수 없다. **번들 meta 를 보고 어느 쪽인지 판별해**
+                #   width_fixed / width_quantile 로 따로 적는다.
+                #   (width_ops · width_q 는 옛 기록과 이어지게 그대로 둔다)
+                if ops_is_q:
+                    w_fixed, w_quant = wq, wo
+                else:
+                    w_fixed, w_quant = wo, wq
                 row = dict(run_dt=today.isoformat(),
                            base_dt=str(g.base_dt.iloc[0]),
                            target=kind, item_nm=it, n=len(g),
                            pred_diff_rows=diff,
                            width_ops=round(float(wo), 4),
-                           width_q=round(float(wq), 4))
+                           width_q=round(float(wq), 4),
+                           #   ★ 이 둘은 뜻이 절대 안 바뀐다
+                           width_fixed=round(float(w_fixed), 4),
+                           width_quantile=round(float(w_quant), 4))
                 row.update(drv.get(it, dict(vol7=None, jump=None,
                                             arr=None, spread=None)))
                 rows.append(row)

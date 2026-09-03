@@ -5,7 +5,17 @@
 
 `ops_auc` · `ops_whsl` 번들을 분위수 모델이 든 것으로 **같은 이름으로** 바꾼다.
 
-    ops_auc      →  ops_auc_교체전_YYYYMMDD   (백업)
+    ops_auc      →  ops_auc_pre_YYYYMMDD   (백업)
+
+★ 백업 폴더 이름에 한글을 쓰지 않는다 (2026-09-03 실측).
+  LightGBM 은 C++ 라이브러리라 **한글 경로를 못 엽니다.**
+
+      ops_auc_교체전_20260903   LightGBMError: Could not open ...
+      ops_auc_pre20260903       정상
+
+  처음엔 `_교체전_` 으로 만들었는데, 그러면 **되돌리기용 백업을
+  정작 못 쓰는 상태**가 됩니다. 백업이 있는데 안 열리는 것이
+  없는 것보다 나쁩니다 — 있다고 믿게 되니까요.
     ops_auc_q    →  ops_auc                   (승격)
 
 ## ★ 왜 이름을 안 바꾸나
@@ -74,7 +84,9 @@ def main() -> int:
     if a.rollback:
         n = 0
         for live, _ in PAIRS:
-            baks = sorted(HERE.glob(f"{live}_교체전_*"))
+            #   옛 이름(_교체전_)도 같이 찾는다 — 2026-09-03 이전 백업 호환
+            baks = sorted(HERE.glob(f"{live}_pre_*")
+                          ) + sorted(HERE.glob(f"{live}_교체전_*"))
             if not baks:
                 print(f"  {live}: 백업이 없습니다")
                 continue
@@ -137,7 +149,7 @@ def main() -> int:
 
     for live, new in PAIRS:
         dl, dn = HERE / live, HERE / new
-        bak = HERE / f"{live}_교체전_{STAMP}"
+        bak = HERE / f"{live}_pre_{STAMP}"       # ★ 한글 금지 (위 설명)
         if bak.exists():
             shutil.rmtree(bak)
         shutil.move(str(dl), str(bak))
