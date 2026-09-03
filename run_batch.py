@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-원가 캣쳐 — 일별 배치
+햇들농산 — 일별 배치
 ======================
 수집 → 재생성 → 추론 → 적재 → 채점을 순서대로 돌린다.
 어느 단계든 실패하면 **거기서 멈춘다.** 반쯤 돌린 상태로 예측을 내보내지 않는다.
@@ -496,7 +496,7 @@ def main():
     logpath = LOGDIR / ("batch_%s.log" % today.isoformat())
 
     print("=" * 70)
-    print(" 원가 캣쳐 일별 배치 · %s" % today)
+    print(" 햇들농산 일별 배치 · %s" % today)
     print("=" * 70)
     for name, desc, cwd, _ in STAGES:
         mark = "▶" if name in plan else "·"
@@ -649,7 +649,7 @@ ALERT_FILE = ROOT / "진행기록" / "batch_logs" / "ALERT.txt"
 def notify(failed, run_id, logpath):
     when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     msg = (chr(10).join([
-        "[원가캣쳐 배치 실패] " + when,
+        "[햇들농산 배치 실패] " + when,
         "실패 단계: " + ", ".join(failed),
         "run_id: %s" % run_id,
         "로그: %s" % logpath,
@@ -663,7 +663,7 @@ def notify(failed, run_id, logpath):
         ps = ("[reflection.assembly]::LoadWithPartialName('System.Windows.Forms')|Out-Null;"
               "$n=New-Object System.Windows.Forms.NotifyIcon;"
               "$n.Icon=[System.Drawing.SystemIcons]::Error;$n.Visible=$true;"
-              "$n.ShowBalloonTip(20000,'원가캣쳐 배치 실패','%s','Error');"
+              "$n.ShowBalloonTip(20000,'햇들농산 배치 실패','%s','Error');"
               "Start-Sleep -Seconds 12" % ", ".join(failed))
         subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                        timeout=40, capture_output=True)

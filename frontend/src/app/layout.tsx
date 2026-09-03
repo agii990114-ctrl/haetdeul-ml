@@ -23,7 +23,7 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "원가 캣쳐 · 가격 예측 콘솔",
+  title: "햇들농산 · 가격 예측 콘솔",
   description: "예측 곡선과 감시 agent 결과를 보는 화면",
 };
 

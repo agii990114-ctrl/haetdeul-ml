@@ -66,7 +66,7 @@ SITES = {
 }
 #   ★ HTTP 헤더에는 한글을 못 넣는다 (latin-1 만 된다).
 #   한글을 넣었다가 UnicodeEncodeError 로 전부 실패했다 (2026-09-02).
-UA = ("Mozilla/5.0 (compatible; wonga-catcher-research/1.0; "
+UA = ("Mozilla/5.0 (compatible; haetdeul-research/1.0; "
       "crop price forecasting research)")
 
 #   우리 세 품목과 값에 관한 말. 넓게 잡고 나중에 좁힌다.

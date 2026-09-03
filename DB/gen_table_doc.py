@@ -559,7 +559,7 @@ def render(cur, t, level=2):
     return "\n".join(L)
 
 
-HEAD = """# 원가 캣쳐 — DB 전체 테이블 정의서 v3
+HEAD = """# 햇들농산 — DB 전체 테이블 정의서 v3
 
 > PostgreSQL `cost_catcher_raw` · 테이블 {NT}개 · {NC}컬럼 · 뷰 {NV}개
 > 생성 {DATE} · **`DB/gen_table_doc.py` 로 재생성합니다. 손으로 고치지 마세요**
