@@ -61,8 +61,16 @@ import train as T                                            # noqa: E402
 from exp_quantile import build                               # noqa: E402
 
 OPS = {"auc": (0.4, 76), "whsl": (0.8, 122), "rtl": (1.0, 81)}
-FOLDS = [("A(검증2023)", "2022-12-31", "2023-12-31"),
-         ("B(검증2022)", "2021-12-31", "2022-12-31")]
+#   ★ 폴드 C 를 쓸 수 있게 한다 (2026-09-03).
+#     폴드 B(검증 2022)에는 태풍 힌남노(9/6)가 들어 있어 **유일하게 공급
+#     충격이 든 폴드**다. 이득이 폴드 B 에만 몰리면 "충격기 전용" 인지
+#     아닌지 가려야 하는데, 폴드 A 하나로는 못 가른다.
+ALL_FOLDS = {
+    "A": ("A(검증2023)", "2022-12-31", "2023-12-31"),
+    "B": ("B(검증2022)", "2021-12-31", "2022-12-31"),
+    "C": ("C(검증2021)", "2020-12-31", "2021-12-31"),
+}
+FOLDS = [ALL_FOLDS["A"], ALL_FOLDS["B"]]
 ITEMS = ["배추", "무", "양파"]
 VOL = HERE.parents[2] / "DB" / "데이터" / "daily_volume_202608240949.csv"
 TEMP = "prod_area_temp_avg_lag1"
@@ -153,8 +161,12 @@ def main() -> int:
     ap.add_argument("--train-start", default="2017-01-01")
     ap.add_argument("--gate-lt", type=int, default=3)
     ap.add_argument("--seeds", nargs="+", type=int, default=list(range(62, 82)))
+    ap.add_argument("--folds", nargs="+", default=["A", "B"],
+                    choices=["A", "B", "C"],
+                    help="폴드 선택. C(검증2021)는 충격이 없는 해다")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    folds = [ALL_FOLDS[f] for f in a.folds]
 
     print("=" * 92)
     print("[주산지 대표성] 1위 산지 비중을 넣어 본다 · 운영 조건 · 품목별")
@@ -167,7 +179,7 @@ def main() -> int:
     for kind in a.targets:
         alpha, rounds = OPS[kind]
         keep = {}
-        for tag, tend, vend in FOLDS:
+        for tag, tend, vend in folds:
             prof = load_profile(tend)
             tr, va, feats, cats, tgt, anc, label = build(a.csv, kind, tend, vend, alpha)
             tr = tr[tr.base_dt >= pd.Timestamp(a.train_start)]
@@ -203,8 +215,9 @@ def main() -> int:
                 print(line)
 
         print(f"\n  [{label} 판정]  (양수 = 넣는 게 낫다)")
-        print(f"    {'변형':<10}{'품목':<6}{'폴드A':>10}{'폴드B':>10}"
-              f"{'합산':>10}{'필요':>9}  판정")
+        print(f"    {'변형':<10}{'품목':<6}"
+              + "".join("%10s" % ("폴드" + f) for f in a.folds)
+              + f"{'합산':>10}{'필요':>9}  판정")
         for vname in a.variants:
             if vname == "keep":
                 continue
@@ -212,16 +225,18 @@ def main() -> int:
                 rs = keep.get((vname, it))
                 if not rs or len(rs) < 2:
                     continue
-                tot = rs[0][0] + rs[1][0]
+                tot = sum(r[0] for r in rs)
                 need = 2 * max(r[1] for r in rs)
-                if (rs[0][0] > 0) != (rs[1][0] > 0):
+                signs = {r[0] > 0 for r in rs}
+                if len(signs) > 1:
                     v = "판정 불가 (부호 갈림)"
                 elif abs(tot) < need:
                     v = "판정 불가 (편차x2 미달)"
                 else:
                     v = "★ 넣는 게 낫다" if tot > 0 else "★ 넣지 않는 게 낫다"
-                print(f"    {vname:<10}{it:<6}{rs[0][0]:>+10.4f}{rs[1][0]:>+10.4f}"
-                      f"{tot:>+10.4f}{need:>9.4f}  {v}")
+                print(f"    {vname:<10}{it:<6}"
+                      + "".join("%+10.4f" % r[0] for r in rs)
+                      + f"{tot:>+10.4f}{need:>9.4f}  {v}")
 
     if a.out:
         pd.DataFrame(rows).to_csv(a.out, index=False, encoding="utf-8-sig")
