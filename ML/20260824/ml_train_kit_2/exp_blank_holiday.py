@@ -58,8 +58,16 @@ from exp_quantile import build                               # noqa: E402
 #   운영이 실제로 쓰는 값. ablation_ops.py 와 같아야 한다 (§5.12 — 비교는
 #   운영이 쓰는 자리에서 한다).
 OPS = {"auc": (0.4, 76), "whsl": (0.8, 122), "rtl": (1.0, 81)}
-FOLDS = [("A(검증2023)", "2022-12-31", "2023-12-31"),
-         ("B(검증2022)", "2021-12-31", "2022-12-31")]
+#   ★ 폴드 C 를 쓸 수 있게 한다 (2026-09-03).
+#     같은 날 2폴드를 통과한 후보 둘(M-06 · M-15 mix_yr)이 **모두 폴드 C 에서
+#     뒤집혔다.** 특히 M-15 는 A·B 가 둘 다 양수이고 새 시드로 재현까지 됐다.
+#     운영에 넣을 것은 폴드 C 를 반드시 본다.
+ALL_FOLDS = {
+    "A": ("A(검증2023)", "2022-12-31", "2023-12-31"),
+    "B": ("B(검증2022)", "2021-12-31", "2022-12-31"),
+    "C": ("C(검증2021)", "2020-12-31", "2021-12-31"),
+}
+FOLDS = [ALL_FOLDS["A"], ALL_FOLDS["B"]]
 COL = "holiday_remain_d"
 ITEMS = ["배추", "무", "양파"]
 
@@ -112,8 +120,10 @@ def main() -> int:
                     default=list(range(62, 82)))
     ap.add_argument("--blank-items", nargs="+", default=["무"],
                     help="이 품목의 행에서만 명절 feature 를 비운다")
+    ap.add_argument("--folds", nargs="+", default=["A", "B"], choices=["A", "B", "C"])
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
+    folds = [ALL_FOLDS[f] for f in a.folds]
 
     print("=" * 88)
     print("[명절 feature 재확인] 무 행에서만 비우기 · 운영 조건")
@@ -126,7 +136,7 @@ def main() -> int:
     for kind in a.targets:
         alpha, rounds = OPS[kind]
         keep = {}
-        for tag, tend, vend in FOLDS:
+        for tag, tend, vend in folds:
             tr, va, feats, cats, tgt, anc, label = build(a.csv, kind, tend, vend, alpha)
             tr = tr[tr.base_dt >= pd.Timestamp(a.train_start)]
             va = va[va.lead_biz_d >= a.gate_lt].copy()
@@ -161,20 +171,21 @@ def main() -> int:
                                  gain=round(gain, 5), sd=round(sd, 5)))
 
         print(f"\n  [{label} 판정]  (양수 = 무 행에서 비우는 게 낫다)")
-        print(f"    {'품목':<6}{'폴드A':>11}{'폴드B':>11}{'합산':>11}{'필요':>10}  판정")
+        print(f"    {'품목':<6}" + "".join("%11s" % ("폴드" + f) for f in a.folds)
+              + f"{'합산':>11}{'필요':>10}  판정")
         for it in ITEMS + ["통합"]:
             rs = keep[it]
-            tot = rs[0][0] + rs[1][0]
+            tot = sum(r[0] for r in rs)
             need = 2 * max(r[1] for r in rs)
-            same = (rs[0][0] > 0) == (rs[1][0] > 0)
+            same = len({r[0] > 0 for r in rs}) == 1
             if not same:
                 verd = "판정 불가 (부호 갈림)"
             elif abs(tot) < need:
                 verd = "판정 불가 (편차x2 미달)"
             else:
                 verd = "★ 비우는 게 낫다" if tot > 0 else "★ 그대로 두는 게 낫다"
-            print(f"    {it:<6}{rs[0][0]:>+11.4f}{rs[1][0]:>+11.4f}"
-                  f"{tot:>+11.4f}{need:>10.4f}  {verd}")
+            print(f"    {it:<6}" + "".join("%+11.4f" % r[0] for r in rs)
+                  + f"{tot:>+11.4f}{need:>10.4f}  {verd}")
 
     if a.out:
         pd.DataFrame(rows).to_csv(a.out, index=False, encoding="utf-8-sig")
