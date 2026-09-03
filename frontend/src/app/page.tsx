@@ -114,7 +114,7 @@ export default function Console() {
     <main className="mx-auto max-w-[1180px] px-6 py-8">
       <header className="mb-6 border-b border-line pb-5">
         <p className="m-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-faint">
-          원가 캣쳐 · ML 파트
+          햇들농산 · ML 파트
         </p>
         <h1 className="m-0 mt-1 text-[22px] font-bold tracking-tight">가격 예측 콘솔</h1>
         <p className="m-0 mt-1.5 text-[12.5px] text-muted">

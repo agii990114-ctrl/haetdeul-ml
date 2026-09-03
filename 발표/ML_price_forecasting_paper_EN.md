@@ -1,7 +1,7 @@
 # Multi-Horizon Price Forecasting for Agricultural Storage Trading
 ## A Three-Target Anchor-Ratio Approach on Korean Wholesale Market Data
 
-**ML Track · Cost Catcher Project**
+**ML Track · Haetdeul Nongsan Project**
 Interim Technical Report · 2026-08-28
 
 ---

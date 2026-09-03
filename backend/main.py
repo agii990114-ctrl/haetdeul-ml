@@ -38,7 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
 
-app = FastAPI(title="원가 캣쳐 ML 콘솔 API", version="0.1.0")
+app = FastAPI(title="햇들농산 ML 콘솔 API", version="0.1.0")
 
 #   개발 중에는 화면이 3000 포트에서 뜬다. 와일드카드(*)를 쓰지 않는 이유는
 #   나중에 인증이 붙었을 때 아무 페이지나 우리 API 를 부르게 되기 때문이다.

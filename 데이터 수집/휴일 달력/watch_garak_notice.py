@@ -46,7 +46,7 @@ import urllib.request
 BASE = "https://www.garak.co.kr/homepage/M0000227/board"
 LIST_URL = BASE + "/list.do?searchCondition=0&searchKeyword=%s&pageIndex=%d"
 VIEW_URL = BASE + "/view.do?atcSn=%s"
-UA = "Mozilla/5.0 (compatible; cost-catcher/1.0)"
+UA = "Mozilla/5.0 (compatible; haetdeul/1.0)"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
