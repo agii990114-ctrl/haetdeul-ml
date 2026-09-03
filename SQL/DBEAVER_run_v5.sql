@@ -393,7 +393,16 @@ FROM (
 SELECT dt, item_nm,
        AVG(prc_per_kg)::NUMERIC(15,3) AS prc
 FROM (
-    SELECT exmn_ymd AS dt, item_nm,
+    -- ★★ 이름이 아니라 코드로 거른다 (2026-09-03).
+    --   원천이 2026 부터 이름을 바꿨다 — 244 '마늘' -> '피마늘' · 241 '고추' -> '건고추'.
+    --   그래서 item_nm IN ('배추','양파','무','마늘') 로 걸던 이 자리에서
+    --   **마늘이 2025-12-30 에서 조용히 끊겨 있었다** (다른 셋은 2026-09 까지 있음).
+    --   값이 틀린 게 아니라 행이 사라지는 사고라 눈에 안 띈다.
+    --   CLAUDE.md 9절이 경고한 그대로인데 이 SQL 만 안 고쳐져 있었다.
+    --   코드로 걸고 이름은 여기서 우리가 정한다 — 원천이 또 바꿔도 안 흔들린다.
+    SELECT exmn_ymd AS dt,
+    CASE item_cd WHEN '211' THEN '배추' WHEN '245' THEN '양파'
+                 WHEN '231' THEN '무'   WHEN '244' THEN '마늘' END AS item_nm,
            CASE
                -- 'kg', 'kg(그물망 3포기)' 등 kg 계열 → 단위크기로 나눔
                WHEN unit LIKE '%kg%' THEN exmn_dd_prc / NULLIF(unit_sz,0)
@@ -406,7 +415,7 @@ FROM (
     WHERE se_cd   = '02'        -- 중도매인 판매가
       AND grd_cd  = '04'        -- 상품
       AND mrkt_nm = '가락도매'       -- 가락도매 (전 기간 완비)
-      AND item_nm IN ('배추','양파','무','마늘')   -- 대상 품목
+      AND item_cd IN ('211','245','231','244')     -- 배추·양파·무·마늘
       AND exmn_dd_prc IS NOT NULL
       AND unit_sz > 0
 ) x
@@ -432,14 +441,17 @@ CREATE INDEX ix_tmp_px_bn ON tmp_px(item_nm, bn);
 --       어긋난 문제가 된다.
 DROP TABLE IF EXISTS tmp_rtl;
 CREATE TEMP TABLE tmp_rtl AS
-SELECT exmn_ymd AS dt, item_nm,
+--   ★ 여기도 코드로 건다 (2026-09-03). STEP 1 주석 참조.
+SELECT exmn_ymd AS dt,
+CASE item_cd WHEN '211' THEN '배추' WHEN '245' THEN '양파'
+             WHEN '231' THEN '무'   WHEN '244' THEN '마늘' END AS item_nm,
        AVG(exmn_dd_prc / NULLIF(unit_sz,0))::NUMERIC(15,3) AS prc
 FROM veg_daily_price_raw
 WHERE se_cd = '01' AND grd_cd = '04'
   AND sgg_cd = '1101'                     -- 서울. 앵커·타겟 동일 기준
-  AND item_nm IN ('배추','양파','무','마늘')
+  AND item_cd IN ('211','245','231','244')
   AND exmn_dd_prc IS NOT NULL AND unit_sz > 0
-GROUP BY exmn_ymd, item_nm;
+GROUP BY 1, 2;
 CREATE INDEX ix_tmp_rtl ON tmp_rtl(item_nm, dt);
 
 -- STEP 3. 주산지 기상 사전 집계 (관측소 × 날짜 1회 계산)
@@ -1170,15 +1182,20 @@ SET target_auc_prc = (
 --   → 위 STEP 2 의 tmp_rtl 과 필터가 완전히 같아야 한다 (서울 한정 포함).
 DROP TABLE IF EXISTS tmp_rtl_t;
 CREATE TEMP TABLE tmp_rtl_t AS
-SELECT exmn_ymd AS dt, item_nm,
+--   ★ 앵커(tmp_rtl)와 똑같이 코드로 거른다. 한쪽만 바꾸면 2026 부터
+--     이름이 어긋나 조인이 통째로 빈다 (2026-09-03)
+SELECT exmn_ymd AS dt,
+CASE item_cd WHEN '211' THEN '배추' WHEN '245' THEN '양파'
+             WHEN '231' THEN '무'   WHEN '244' THEN '마늘' END AS item_nm,
        AVG(exmn_dd_prc / NULLIF(unit_sz, 0))::NUMERIC(15,3) AS prc
 FROM veg_daily_price_raw
 WHERE se_cd  = '01'          -- 소매
   AND grd_cd = '04'          -- 상품
   AND sgg_cd = '1101'        -- 서울. tmp_rtl(앵커)과 동일 기준
+  AND item_cd IN ('211','245','231','244')
   AND exmn_dd_prc IS NOT NULL
   AND unit_sz > 0
-GROUP BY exmn_ymd, item_nm;
+GROUP BY 1, 2;
 CREATE INDEX ix_tmp_rtl_t ON tmp_rtl_t(item_nm, dt);
 
 UPDATE crop_price_train t
@@ -1569,12 +1586,16 @@ GROUP BY 1,2,3 ORDER BY 1,2;
 --
 --    확인: 두 행 모두 불일치 0 이어야 정상. 1건이라도 나오면 소매 모델 학습 금지.
 WITH seoul AS (
-    SELECT exmn_ymd AS dt, item_nm,
+    -- ★ tmp_rtl / tmp_rtl_t 와 같은 기준이어야 2026 이후 오탐이 안 난다 (2026-09-03)
+    SELECT exmn_ymd AS dt,
+    CASE item_cd WHEN '211' THEN '배추' WHEN '245' THEN '양파'
+                 WHEN '231' THEN '무'   WHEN '244' THEN '마늘' END AS item_nm,
            AVG(exmn_dd_prc / NULLIF(unit_sz,0))::NUMERIC(15,3) AS prc
     FROM veg_daily_price_raw
     WHERE se_cd = '01' AND grd_cd = '04' AND sgg_cd = '1101'
+      AND item_cd IN ('211','245','231','244')
       AND exmn_dd_prc IS NOT NULL AND unit_sz > 0
-    GROUP BY exmn_ymd, item_nm
+    GROUP BY 1, 2
 ),
 -- 앵커는 as-of(기준일 이전 최신)라 달력 -1 일이 아니다. 행마다 LATERAL 로 훑으면
 -- 14만 행 × 시계열 스캔이 되므로, 각 관측일이 유효한 구간(dt, next_dt] 을 만들어
