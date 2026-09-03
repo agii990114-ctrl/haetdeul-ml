@@ -67,10 +67,38 @@ ALPHA_BY_TARGET = {"auc": 0.4, "whsl": 0.8, "rtl": 1.0}
 QUANTILES = (0.1, 0.5, 0.9)
 
 
-def build(csv, target, train_end, valid_end, alpha):
-    """train.py 와 **같은 재료**로 만든다. 다르면 비교가 성립하지 않는다."""
+def build(csv, target, train_end, valid_end, alpha, items=None):
+    """train.py 와 **같은 재료**로 만든다. 다르면 비교가 성립하지 않는다.
+
+    ★ 품목을 거른다 (2026-09-03 추가 — 그전까지 안 걸러 사고가 있었다).
+
+        train.py (운영)   DEFAULT_ITEMS = ["배추","양파","무"]   마늘 제외
+        build()  (실험)   품목 필터 없음                        마늘 포함 24%
+
+    **실험이 운영과 다른 자료로 학습하고 있었다.** 마늘은 학습 행의 24%이고
+    성격이 아주 다르다 (중도매가가 94% 날에 전일과 동일 · 6,244원/kg).
+
+    실측 피해 (시드 10개 · 검증은 3품목만):
+
+        배추 경락가   마늘 포함 0.2288/0.2611 -> 제외 0.2233/0.2505
+        배추 중도매   마늘 포함 0.1858/0.2520 -> 제외 0.1840/0.2375
+        소매가        차이 0.0000  (마늘은 서울 소매 자료가 없어 애초에 빠진다)
+
+    **오늘 찾은 어느 feature 효과보다 크다.** 5.12절("비교는 운영이 쓰는
+    자리에서 한다")을 실험 도구 자체가 어기고 있었다.
+    """
     tgt, anc, label = T.TARGETS[target]
     df = T.load(csv)
+    keep_items = list(items) if items is not None else list(T.DEFAULT_ITEMS)
+    n_all = len(df)
+    df = df[df["item_nm"].astype(str).isin(keep_items)].copy()
+    #   ★ 무엇으로 학습하는지 매번 찍는다. 조용히 다른 자료를 쓰다가
+    #     넉 달 뒤에 알게 되는 일을 막는다 (2026-09-03).
+    if not getattr(build, "_said", False):
+        print("  [학습 품목] %s  (%s행 중 %s행 · 뺀 행 %s)"
+              % (", ".join(keep_items), format(n_all, ","),
+                 format(len(df), ","), format(n_all - len(df), ",")))
+        build._said = True
 
     drop = set(T.DROP) | set(T.TARGET_DROP.get(target, set()))
     drop |= set(T.NEW_PRICE_COLS) - set(T.BASE_CANDS[target][0] if False else [])
