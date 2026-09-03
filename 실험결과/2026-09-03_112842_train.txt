@@ -1,0 +1,77 @@
+======================================================================
+실행 시각  2026-09-03 11:28:42
+명령       python train.py --help
+작업 폴더  C:\IDE\workplace\mainproject_jh_workplace\ML\20260824\ml_train_kit_2
+======================================================================
+usage: train.py [-h] [--train-end TRAIN_END] [--valid-end VALID_END]
+                [--report-test] [--save-pred SAVE_PRED]
+                [--anchor-alpha ANCHOR_ALPHA] [--gate-lt GATE_LT]
+                [--save-model SAVE_MODEL] [--fixed-iter FIXED_ITER]
+                [--quantile] [--quantile-q QUANTILE_Q]
+                [--quantile-q-default QUANTILE_Q_DEFAULT]
+                [--quantile-rounds QUANTILE_ROUNDS] [--blank-holiday [품목 ...]]
+                [--raw] [--seeds SEEDS [SEEDS ...]] [--target {auc,whsl,rtl}]
+                [--train-start TRAIN_START] [--allow-oracle] [--drop-volume]
+                [--with-volpred] [--with-fcst] [--lead-min LEAD_MIN]
+                [--lead-max LEAD_MAX] [--clim-daily] [--keep-all]
+                [--with-new-price] [--with-school] [--items ITEMS [ITEMS ...]]
+                csv
+
+positional arguments:
+  csv
+
+options:
+  -h, --help            show this help message and exit
+  --train-end TRAIN_END
+  --valid-end VALID_END
+                        검증 종료일. 지정하면 그 이후는 테스트 구간으로 봉인
+  --report-test         봉인된 테스트 구간도 평가 (최종 확인 시에만)
+  --save-pred SAVE_PRED
+                        검증 예측을 CSV 로 저장 (게이트·후처리 분석용). 테스트는 --report-test 시에만
+  --anchor-alpha ANCHOR_ALPHA
+                        수축 앵커. α×어제값 + (1−α)×7일평균. 기본 0.6 (2026-08-28 채택). 1.0
+                        이면 어제값 단독(옛 방식). 낮출수록 조용한 구간에 안정적이나 공급 충격에 늦게 반응한다
+  --gate-lt GATE_LT     이 값 미만 리드타임은 모델 대신 baseline(앵커)을 쓴다. 검증 2022·2023 모두에서
+                        LT1~2 가 baseline 보다 나빠 운영 권장값은 3
+  --save-model SAVE_MODEL
+                        학습된 모델과 추론 메타를 이 디렉터리에 저장 (predict.py 입력)
+  --fixed-iter FIXED_ITER
+                        early stopping 대신 고정 라운드 수로 학습 (안정성 비교용)
+  --quantile            상한·하한 모델을 같이 학습해 번들에 넣는다. 점 예측(가운데 값)은 전혀 바뀌지 않는다
+  --quantile-q QUANTILE_Q
+                        품목별 학습 분위수. 예: '배추=0.03,무=0.03,양파=0.02'. 상한은 1-q. 안 주면
+                        --quantile-q-default 를 모두에 쓴다
+  --quantile-q-default QUANTILE_Q_DEFAULT
+                        품목별 지정이 없을 때 쓸 하한 분위수
+  --quantile-rounds QUANTILE_ROUNDS
+                        분위수 모델의 트리 수. ★ q 값과 짝이다 — 트리를 늘리면 학습 분위수에 더 꽉 맞아 검증
+                        적중률이 떨어진다 (실측 300→63.8% · 600→55.5% · 1200→47.7%,
+                        q=0.10 기준). 바꾸려면 q 도 다시 맞춰야 한다
+  --blank-holiday [품목 ...]
+                        이 품목의 행에서만 holiday_remain_d 를 비운다(결측). 값 없이 주면 무.
+                        경락가에서만 이득이 확인됐다 (중도매가·소매가는 배추가 나빠져 상쇄된다)
+  --raw                 앵커 변환 없이 절대가격 학습
+  --seeds SEEDS [SEEDS ...]
+  --target {auc,whsl,rtl}
+                        auc=경락가 · whsl=중도매가 · rtl=소매가
+  --train-start TRAIN_START
+                        학습 시작일. 생략 시 전체
+  --allow-oracle        위험. arr_qty_at_target(대상일 실제 반입량)을 입력으로 쓴다 - 운영에서는 못
+                        구하는 값이라, 검증 구간을 예측값으로 바꿔 넣은 CSV 가 아니면 점수가 거짓이 된다
+  --drop-volume         반입량 원본 4종을 뺀다 (arr_qty_lag1·avg7·prev_yr·auc_vol_lag1)
+  --with-volpred        반입량 예측값(arr_qty_pred)을 넣는다. exp_volume_cascade.py 가 만든
+                        CSV 가 필요하다
+  --with-fcst           대상일 기온 예보를 넣는다 (실험). LT3~5 에만 값이 있으므로 --lead-min 3
+                        --lead-max 5 와 함께 쓸 것
+  --lead-min LEAD_MIN   이 리드타임 미만 행을 학습·검증에서 통째로 뺀다
+  --lead-max LEAD_MAX   이 리드타임 초과 행을 통째로 뺀다
+  --clim-daily          평년 기온을 대상일 기준으로 바꾼다 (실험 · 2026-08-31). 지금 값은 18행 내내
+                        고정이라 예측이 일직선이 되는 원인 중 하나
+  --keep-all            ablation 으로 제외된 feature 도 모두 사용 (비교용)
+  --with-new-price      v5.3 신규 가격 파생 10종을 feature 로 포함 (기본 제외)
+  --with-school         학사일정(school_open_ratio) 을 포함한다. ablation 판정 전 실험용
+  --items ITEMS [ITEMS ...]
+                        학습 품목. 기본 배추 양파 무
+
+======================================================================
+종료 시각  2026-09-03 11:28:42
