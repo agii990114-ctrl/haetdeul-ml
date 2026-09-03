@@ -328,6 +328,12 @@ STAGES = [
      COL / "일일 산출량", None),
     ("collect_econ", "경제변수 수집 + 적재",
      COL / "경제 지표", None),
+    #   ★ 재생성 앞에 놓는다 (2026-09-03 · 백로그 Q-01).
+    #     v5 는 맨 앞에서 TRUNCATE 한다. 수집이 이상한 자료를 가져오면
+    #     멀쩡한 학습표를 지우고 이상한 걸 채운다. **여기가 마지막으로
+    #     되돌릴 수 있는 자리다.**
+    ("precheck", "수집 검사 (재생성 전에 막는다)", ROOT,
+     [PY, str(ROOT / "agent" / "ingest_agent.py"), "--quiet"]),
     ("rebuild", "v5 재생성 (crop_price_train + predict_input)", ROOT, None),
     ("predict", "3타겟 추론", KIT, None),
     # 그림자는 load 앞에 둔다. 적재는 운영 것만 한다.
