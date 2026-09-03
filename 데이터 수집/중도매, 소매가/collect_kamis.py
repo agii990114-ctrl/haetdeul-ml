@@ -150,7 +150,10 @@ def to_row(r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--items", nargs="+", default=["배추", "양파", "무"])
+    #   ★ 기본을 여섯으로 되돌린다 (2026-09-03).
+    #     셋만 받고 있어서 건고추·피마늘·깐마늘이 2026-08-24 에서 멈춰 있었다.
+    #     모델은 배추·무·양파만 쓰지만, 끊긴 자료는 나중에 되메우기 어렵다.
+    ap.add_argument("--items", nargs="+", default=list(ITEMS))
     ap.add_argument("--start", help="기본: DB 최신일 다음 날")
     ap.add_argument("--end", help="기본: 어제")
     ap.add_argument("--check", action="store_true", help="받기만 하고 적재하지 않음")
@@ -172,23 +175,49 @@ def main():
         #   aT 가 2026 부터 이름을 바꿨다 — 마늘→피마늘 · 고추→건고추.
         #   item_nm 으로 세면 "이미 최신" 으로 잘못 판단하거나 신규를 0으로 보고한다.
         codes = [ITEMS[i] for i in a.items]
-        cur.execute("SELECT MAX(exmn_ymd) FROM veg_daily_price_raw WHERE item_cd = ANY(%s)",
-                    (codes,))
-        db_max = cur.fetchone()[0]
+        #   ★★ 품목마다 따로 본다 (2026-09-03 고침).
+        #
+        #   전에는 여섯 품목의 MAX 를 **하나로 뭉쳐** 봤다. 그러면 배추가
+        #   최신일 때 db_max 가 최신이 되고, **뒤처진 품목의 빈 구간을
+        #   아무도 요청하지 않는다.** 뒤처진 품목이 하나라도 있으면
+        #   영영 못 따라잡는다.
+        #
+        #   품목별 최신일을 각각 본다.
+        cur.execute("SELECT item_cd, MAX(exmn_ymd) FROM veg_daily_price_raw "
+                    "WHERE item_cd = ANY(%s) GROUP BY 1", (codes,))
+        db_max_by = {cd: mx for cd, mx in cur.fetchall()}
+        db_max = max(db_max_by.values()) if db_max_by else None
 
-    end = datetime.date.fromisoformat(a.end) if a.end else \
-        datetime.date.today() - datetime.timedelta(days=1)
-    start = datetime.date.fromisoformat(a.start) if a.start else \
-        (db_max + datetime.timedelta(days=1) if db_max else datetime.date(2015, 1, 1))
+    end = datetime.date.fromisoformat(a.end) if a.end else         datetime.date.today() - datetime.timedelta(days=1)
 
-    print("[수집] %s ~ %s · %s" % (start, end, " ".join(a.items)))
-    print("  DB 최신 조사일 %s" % db_max)
-    if start > end:
+    def start_for(name):
+        """그 품목의 시작일. --start 를 주면 그게 이긴다."""
+        if a.start:
+            return datetime.date.fromisoformat(a.start)
+        mx = db_max_by.get(ITEMS[name])
+        return mx + datetime.timedelta(days=1) if mx else datetime.date(2015, 1, 1)
+
+    print("[수집] ~ %s · %s" % (end, " ".join(a.items)))
+    for name in a.items:
+        st, mx = start_for(name), db_max_by.get(ITEMS[name])
+        #   ★ 다른 품목보다 크게 뒤처진 것을 눈에 띄게 찍는다.
+        #     2026-09-03 에 건고추·피마늘·깐마늘이 10일 뒤처진 것을
+        #     아무도 몰랐다. 조용하면 또 그렇게 된다.
+        flag = ""
+        if db_max and mx and (db_max - mx).days > 3:
+            flag = "   ★ 다른 품목보다 %d일 뒤처짐" % (db_max - mx).days
+        print("  %-8s DB 최신 %s -> %s%s"
+              % (name, mx or "(없음)", st if st <= end else "받을 것 없음", flag))
+    if all(start_for(n) > end for n in a.items):
         print("  이미 최신입니다. 받을 구간이 없습니다.")
         return
 
     total_new = 0
     for name in a.items:
+        start = start_for(name)
+        if start > end:
+            print("  %-4s 이미 최신" % name)
+            continue
         got = []
         for s, e in months(start, end):
             try:
