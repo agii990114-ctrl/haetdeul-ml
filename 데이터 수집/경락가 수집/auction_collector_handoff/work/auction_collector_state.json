@@ -1,7 +1,7 @@
 {
-  "lastCompletedDate": "2026-09-01",
-  "updatedAt": "2026-09-02T09:07:11.256924+09:00",
+  "lastCompletedDate": "2026-09-02",
+  "updatedAt": "2026-09-03T09:04:32.879504+09:00",
   "currentDbCsv": "outputs\\auction_prices_current_db.csv",
-  "currentRowCount": 1561394,
-  "currentMaxTradeDate": "2026-09-01"
+  "currentRowCount": 1561621,
+  "currentMaxTradeDate": "2026-09-02"
 }
