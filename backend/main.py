@@ -141,7 +141,18 @@ def meta():
 # ─────────────────────────────────────────────────────────── 예측
 
 @app.get("/forecast/base-dates")
-def base_dates(limit: int = Query(60, ge=1, le=400)):
+def base_dates(limit: int = Query(400, ge=1, le=400)):
+    """기준일 목록.
+
+    ★ 기본값을 60 -> 400 으로 올렸다 (2026-09-04).
+
+    2026 기준일 137개를 백필하자 기준일이 27 -> 168개가 됐고, 최근 60개만
+    나오면서 **1월이 화면에서 사라졌다.** 자료는 그대로 있는데 화면에서만
+    없어져 "지워졌나" 로 보였다.
+
+    잘린 것을 알 방법이 화면에 없었다는 게 진짜 문제다. 상한(400)에
+    닿으면 그 사실을 같이 내보낸다.
+    """
     with db() as c, c.cursor() as cur:
         cur.execute(
             "SELECT base_dt, COUNT(*) AS n, COUNT(actual_prc) AS scored, "
