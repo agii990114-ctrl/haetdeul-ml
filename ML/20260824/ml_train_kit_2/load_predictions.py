@@ -36,7 +36,11 @@ ROOT = HERE.parents[2]
 
 COLS = ["base_dt", "target_dt", "item_nm", "lead_biz_d", "target_kind", "unit",
         "anchor_prc", "pred_prc", "pred_lo", "pred_hi", "seed_spread",
-        "gated", "gate_reason", "model_ver", "model_created_at"]
+        "gated", "gate_reason", "model_ver", "model_created_at",
+        #   ★ 구간을 어느 방식으로 만들었나 (2026-09-04).
+        #     매입 파트가 폭으로 역산하다 세 번 어긋났다. 표시가 없었기 때문이다.
+        #     옛 CSV 에는 이 칸이 없으므로 없으면 그냥 비워 둔다 (아래 miss 검사 제외).
+        "band_method"]
 NUM = {"anchor_prc", "pred_prc", "pred_lo", "pred_hi", "seed_spread"}
 KIND = {"auc", "whsl", "rtl"}
 
@@ -67,7 +71,8 @@ def read(path):
         rows = list(csv.DictReader(f))
     if not rows:
         return [], ["빈 파일"]
-    miss = [c for c in COLS if c not in rows[0] and c != "gate_reason"]
+    miss = [c for c in COLS
+            if c not in rows[0] and c not in ("gate_reason", "band_method")]
     if miss:
         return [], ["필요한 컬럼이 없습니다: %s" % miss]
 

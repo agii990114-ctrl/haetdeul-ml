@@ -416,6 +416,17 @@ def main():
     items_arr = (df["item_nm"].astype(str).to_numpy()
                  if "item_nm" in df.columns else None)
 
+    #   ★ 이 행의 구간을 **어느 방식으로 만들었나** (2026-09-04).
+    #
+    #     매입 파트가 밴드 방식을 세 번 잘못 추정했습니다. 폭으로 역산하면
+    #     안 되는데(폭은 시장 상황으로도 움직입니다) 표에 표시가 없으니
+    #     그럴 수밖에 없었습니다. **추정 말고 만들 때 기록합니다.**
+    #
+    #     quantile     분위수 회귀가 낸 구간
+    #     fixed_table  ref_prediction_band 고정표
+    #     none         둘 다 없어 비워 둔 행
+    band_method = np.full(len(pred), "none", dtype=object)
+
     if qmods and qmap and items_arr is not None:
         #   ── 분위수 회귀 (2026-09-01 채택 · CLAUDE.md 5.11) ──────────
         #   모델이 상한·하한을 직접 낸다. 고정표와 달리 **그날 입력에 따라
@@ -447,6 +458,7 @@ def main():
         if cross:
             print("  [주의] 분위수 교차 %d행 — 정렬해서 씁니다" % cross)
             lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+        band_method[:] = "quantile"
         print("  [구간] 분위수 회귀 · 품목별 하한 %s"
               % " · ".join("%s %.2f" % (k, float(v)) for k, v in qmap.items()))
     elif band and items_arr is not None:
@@ -462,6 +474,7 @@ def main():
             lo[i], hi[i] = pred[i] * b[0], pred[i] * b[2]
         if miss:
             print("  [주의] 밴드가 없는 조합 %d행 (pred_lo/hi 는 NULL)" % miss)
+        band_method[:] = "fixed_table"
         print("  [구간] 고정표(ref_prediction_band 방식) · %d조합" % len(band))
     else:
         print("  [주의] 번들에 밴드도 분위수 모델도 없습니다. pred_lo/hi 를 비웁니다.")
@@ -477,9 +490,14 @@ def main():
             b = band.get("%s|%d" % (items_arr[i], lt[i]))
             lo[i], hi[i] = ((pred[i] * b[0], pred[i] * b[2]) if b
                             else (np.nan, np.nan))
+            #   게이트 행은 예측이 앵커라 고정표로 붙인다. 방식도 그렇게 적는다.
+            band_method[i] = "fixed_table" if b else "none"
             n_g += 1
         print("  [구간] 게이트 %d행은 고정표로 붙였습니다 (예측이 앵커이므로)"
               % n_g)
+
+    #   구간이 비어 있으면 방식도 none 이다 — 없는 것을 있다고 적지 않는다.
+    band_method[np.isnan(lo) | np.isnan(hi)] = "none"
 
     # ── 출력 ── prediction_log 스키마 그대로 ──────────────────
     #   컬럼 이름·순서를 테이블과 일치시킨다. 그래야 그대로 적재된다.
@@ -495,6 +513,7 @@ def main():
         "pred_prc": np.round(pred, 3),
         "pred_lo": np.round(lo, 3),
         "pred_hi": np.round(hi, 3),
+        "band_method": band_method,
         "seed_spread": np.round(spread, 3),
         "gated": gated,
         "gate_reason": np.where(gated, reason, None),
