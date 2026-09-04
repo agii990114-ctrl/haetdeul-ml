@@ -1252,7 +1252,40 @@ INSERT INTO predict_input (
     crop_area_yoy_rt, m2_growth_rt, epu_idx, ppi_idx, rtl_prc_lag1,
     school_open_ratio
 )
-WITH base AS (
+WITH px_ext AS (
+    -- ★★ 기준일을 "관측된 날" 이 아니라 "달력상 조사일" 로 넓힌다 (2026-09-04).
+    --
+    --   base_dt = D 행은 **D-1 까지만** 본다 (앵커가 whsl_prc_lag1 이다).
+    --   D 자신의 조사값은 한 칸도 안 쓴다. 그런데 이 CTE 가 tmp_px 에서만
+    --   기준일을 뽑아서, **D 의 조사값이 들어와야 base_dt=D 를 만들었다.**
+    --   쓰지도 않는 값을 기다린 것이다.
+    --
+    --   실측 (2026-09-04 아침 · 자료는 9/3 까지 있었다)
+    --       나온 것    base_dt 9/3  앵커 9/2 값(1,440원)
+    --       될 것      base_dt 9/4  앵커 9/3 값(1,460원)
+    --   **앵커도 하루 묵고 지평도 하루 짧았다.**
+    --
+    --   매입 파트 계약이 daily[0] = as_of + 1 인데 as_of 가 되어 어긋났다.
+    --   248일 중 26일만 통과했다 (매입 파트 실측 2026-09-04).
+    --
+    --   고치는 법: 마지막 관측일 다음 조사일부터 **오늘까지** 유령 행을
+    --   끼운다. prc 는 NULL 이다 — 값이 아직 없으니까.
+    --   창(window) 함수가 알아서 한 칸 민다:
+    --       LAG(prc,1)                                -> 마지막 관측값 = 원하는 앵커
+    --       AVG(...ROWS 7 PRECEDING AND 1 PRECEDING)  -> 현재 행은 애초에 뺀다
+    --
+    --   ★ tmp_px 자체는 안 건드린다. 건드리면 학습표가 바뀐다.
+    --     유령 행은 이 STEP 8 안에서만 산다.
+    SELECT dt, item_nm, prc, bn FROM tmp_px
+    UNION ALL
+    SELECT c.dt, i.item_nm, NULL::NUMERIC, c.survey_seq
+    FROM (SELECT DISTINCT item_nm FROM tmp_px) i
+    CROSS JOIN ref_calendar c
+    WHERE c.is_survey
+      AND c.dt >  (SELECT MAX(x.dt) FROM tmp_px x WHERE x.item_nm = i.item_nm)
+      AND c.dt <= CURRENT_DATE
+),
+base AS (
     SELECT p.dt AS base_dt, p.item_nm, p.bn,
            LAG(p.prc,1) OVER w AS whsl_prc_lag1,
            LAG(p.prc,3) OVER w AS whsl_prc_lag3,
@@ -1261,11 +1294,11 @@ WITH base AS (
            AVG(p.prc)         OVER (PARTITION BY p.item_nm ORDER BY p.bn ROWS BETWEEN 14 PRECEDING AND 1 PRECEDING)::NUMERIC(15,3) AS whsl_prc_avg14,
            STDDEV_SAMP(p.prc) OVER (PARTITION BY p.item_nm ORDER BY p.bn ROWS BETWEEN 7  PRECEDING AND 1 PRECEDING)::NUMERIC(15,3) AS whsl_prc_std7,
            CASE WHEN p.dt - LAG(p.dt) OVER w > 1 THEN 1 ELSE 0 END AS market_closed_lag1_yn
-    FROM tmp_px p
+    FROM px_ext p
     WINDOW w AS (PARTITION BY p.item_nm ORDER BY p.bn)
 ),
 recent AS (
-    SELECT item_nm, MAX(bn) AS bn_max FROM tmp_px GROUP BY item_nm
+    SELECT item_nm, MAX(bn) AS bn_max FROM px_ext GROUP BY item_nm
 ),
 -- crop_price_train 과 다른 곳은 여기 하나뿐이다.
 --   저기는 tmp_px 에서 대상일을 찾고(=값이 있어야 한다),
@@ -1653,10 +1686,34 @@ GROUP BY 1 ORDER BY 4;
 --           tmp_pi_cfg.n_base 를 늘릴 것.
 --        ③ 지연일 — 3일을 넘으면 앵커가 낡았다. 예측을 오늘 값으로 쓰지 말 것.
 -- ---------------------------------------------------------------------------
-WITH cmp AS (
-    SELECT (to_jsonb(p) - 'target_whsl_prc' - 'target_auc_prc' - 'target_rtl_prc') AS pj,
-           (to_jsonb(t) - 'id' - 'created_at'
-                        - 'target_whsl_prc' - 'target_auc_prc' - 'target_rtl_prc') AS tj
+--   ★ 2026-09-04 정정 — 이 검사가 일주일째 100% 불일치를 내고 있었다.
+--     v5.3(08-27)이 파생 컬럼 10종을 더했는데 **STEP 8 은 안 고쳤다.**
+--     그래서 predict_input 의 아래 7칸이 통째로 NULL 이다(2,160행 전부).
+--
+--         auc_prc_prev_yr
+--         rtl_prc_lag3 · rtl_prc_lag7 · rtl_prc_avg7 · rtl_prc_avg14
+--         rtl_prc_std7 · rtl_prc_prev_yr
+--
+--     예측에는 영향이 없다 — 이 10종은 모델 입력에서 뺀 것들이다(백로그 M-16:
+--     잣대로는 최강인데 입력으로는 해롭다). **문제는 검사 쪽이다.**
+--     늘 100% 불일치라 **진짜 갈라짐이 묻힌다.** 매일 우는 경보는 아무도 안 본다.
+--
+--     그래서 이 7칸을 대조에서 빼되 **아래 [14-2] 로 따로 세어 보이게** 한다.
+--     숨기는 게 아니라 자리를 옮기는 것이다.
+--
+--     ⚠ 함정: 나중에 train.py --with-new-price 로 이 10종을 채택하면
+--       **학습은 값을 보고 추론은 NULL 을 본다.** 채택할 때 STEP 8 도 같이 고칠 것.
+WITH skipped(col) AS (
+    VALUES ('auc_prc_prev_yr'),('rtl_prc_lag3'),('rtl_prc_lag7'),('rtl_prc_avg7'),
+           ('rtl_prc_avg14'),('rtl_prc_std7'),('rtl_prc_prev_yr')
+),
+strip AS (SELECT array_agg(col) AS cols FROM skipped),
+cmp AS (
+    SELECT ((to_jsonb(p) - 'target_whsl_prc' - 'target_auc_prc' - 'target_rtl_prc')
+            - (SELECT cols FROM strip)) AS pj,
+           ((to_jsonb(t) - 'id' - 'created_at'
+                         - 'target_whsl_prc' - 'target_auc_prc' - 'target_rtl_prc')
+            - (SELECT cols FROM strip)) AS tj
     FROM predict_input p
     JOIN crop_price_train t USING (base_dt, item_nm, lead_biz_d)
 )
@@ -1674,6 +1731,19 @@ SELECT '데이터 지연(일) — 3 초과면 앵커가 낡음',
        (current_date - MAX(base_dt)),
        COUNT(*) FILTER (WHERE whsl_prc_lag1 IS NULL)
 FROM predict_input;
+
+
+-- [14-2] STEP 8 이 안 채우는 칸  (2026-09-04)
+--   위 [14] 에서 뺀 7칸이 **정말 안 채워져 있는지** 눈에 보이게 센다.
+--   지금은 전부 0 이 정상이다(= STEP 8 이 안 만든다). 0 이 아닌 값이 나오면
+--   누가 STEP 8 에 계산을 더한 것이니 [14] 의 skipped 목록에서 빼야 한다.
+SELECT 'auc_prc_prev_yr' AS 칸, COUNT(auc_prc_prev_yr) AS 값있는행, COUNT(*) AS 전체 FROM predict_input
+UNION ALL SELECT 'rtl_prc_lag3',    COUNT(rtl_prc_lag3),    COUNT(*) FROM predict_input
+UNION ALL SELECT 'rtl_prc_lag7',    COUNT(rtl_prc_lag7),    COUNT(*) FROM predict_input
+UNION ALL SELECT 'rtl_prc_avg7',    COUNT(rtl_prc_avg7),    COUNT(*) FROM predict_input
+UNION ALL SELECT 'rtl_prc_avg14',   COUNT(rtl_prc_avg14),   COUNT(*) FROM predict_input
+UNION ALL SELECT 'rtl_prc_std7',    COUNT(rtl_prc_std7),    COUNT(*) FROM predict_input
+UNION ALL SELECT 'rtl_prc_prev_yr', COUNT(rtl_prc_prev_yr), COUNT(*) FROM predict_input;
 
 
 -- [15] 파생 컬럼 대칭 검사  (v5.3 · 2026-08-27)
