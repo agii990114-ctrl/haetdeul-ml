@@ -266,7 +266,9 @@ def load_db(rows: list[dict], url: str) -> None:
 
 # ── main ────────────────────────────────────────────────────────────────
 def main() -> None:
+    #   폴더 -> 루트 순 (2026-09-04 · S-01). 먼저 읽은 값이 이긴다.
     load_dotenv(HERE / ".env")
+    load_dotenv(HERE.parents[1] / ".env")
     this_year = dt.date.today().year
 
     ap = argparse.ArgumentParser(description="한국천문연구원 특일 정보 수집")
@@ -280,7 +282,9 @@ def main() -> None:
     ap.add_argument("--load-db", action="store_true", help="DATABASE_URL 로 직접 적재")
     a = ap.parse_args()
 
-    api = HolidayApi(os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip())
+    #   ★ 경락가 폴더의 같은 이름은 **다른 값**이다. 쓰임 이름을 먼저 본다.
+    api = HolidayApi(os.environ.get("HOLIDAY_KEY", "").strip()
+                     or os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip())
     cache = Path(a.cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
 

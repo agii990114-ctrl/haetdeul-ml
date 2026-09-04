@@ -86,7 +86,9 @@ def env():
 
 
 def service_key():
-    k = os.environ.get("DATA_GO_KR_KEY") or os.environ.get("DATA_GO_KR_SERVICE_KEY")
+    #   쓰임 이름을 먼저 본다 (2026-09-04 · S-01). 옛 이름은 폴백이다.
+    k = (os.environ.get("KAMIS_KEY") or os.environ.get("DATA_GO_KR_KEY")
+         or os.environ.get("DATA_GO_KR_SERVICE_KEY"))
     if k:
         return k.strip().lstrip("﻿")     # BOM 한 글자가 섞이면 403 이 난다
     sys.exit("인증키가 없습니다. 루트 .env 에 DATA_GO_KR_KEY 를 넣으세요.")
