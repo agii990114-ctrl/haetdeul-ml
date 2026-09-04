@@ -482,7 +482,13 @@ def survey_lag(conn):
         cur.execute("""
             SELECT MAX(exmn_ymd) FROM veg_daily_price_raw
             WHERE se_cd='02' AND grd_cd='04' AND mrkt_nm='가락도매'
-              AND item_nm IN ('배추','양파','무')""")
+              -- ★ 원천 표는 이름이 아니라 코드로 건다 (2026-09-04).
+              --   원천이 이름을 바꾼 전력이 있다 (244 마늘 -> 피마늘 ·
+              --   241 고추 -> 건고추). 배추·무·양파가 그렇게 바뀌면
+              --   이 검사가 "자료가 없다" 가 아니라 **조용히 죽는다** —
+              --   MAX 가 NULL 이 되어 밀린 정도를 못 센다.
+              --   211 배추 · 245 양파 · 231 무
+              AND item_cd IN ('211','245','231')""")
         last_data = cur.fetchone()[0]
         cur.execute("""SELECT COUNT(*) FROM ref_calendar
                        WHERE is_survey AND dt > %s AND dt <= CURRENT_DATE""",
