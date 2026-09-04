@@ -107,7 +107,8 @@ def load_key():
 
     # 이름을 여러 개 받는다. 공공데이터포털은 계정당 인증키가 하나라서
     # 다른 수집기가 쓰는 키를 그대로 써도 된다 (ASOS 활용신청만 돼 있으면).
-    key = (os.environ.get("ASOS_SERVICE_KEY")
+    key = (os.environ.get("ASOS_KEY")            # 쓰임 이름 (2026-09-04 · S-01)
+           or os.environ.get("ASOS_SERVICE_KEY")
            or os.environ.get("DATA_GO_KR_KEY")
            or os.environ.get("DATA_GO_KR_SERVICE_KEY"))
     if not key:

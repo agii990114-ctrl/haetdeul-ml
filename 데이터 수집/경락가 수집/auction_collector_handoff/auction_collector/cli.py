@@ -98,7 +98,10 @@ def _prepare_artifacts(paths: dict[str, Path], *, generated_from: str) -> dict[s
 
 
 def _collector(args: argparse.Namespace) -> Collector:
-    api_key = os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip()
+    #   ★ DATA_GO_KR_SERVICE_KEY 는 휴일 달력 폴더에서 **다른 값**을 뜻한다.
+    #     그래서 쓰임 이름(AUCTION_KEY)을 먼저 본다 (2026-09-04 · S-01).
+    api_key = (os.environ.get("AUCTION_KEY", "").strip()
+               or os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip())
     if not api_key:
         raise RuntimeError(".env에 DATA_GO_KR_SERVICE_KEY를 설정하세요.")
     items = load_items(args.items_config)
@@ -361,7 +364,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    #   폴더 .env 를 먼저 읽고 루트를 폴백으로 둔다 (2026-09-04 · S-01).
+    #   setdefault 라 먼저 읽은 값이 이긴다 — 지금 동작이 그대로 유지된다.
     load_dotenv(Path(".env"))
+    load_dotenv(Path(__file__).resolve().parents[4] / ".env")
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
