@@ -572,7 +572,21 @@ def main():
     # 수집 뒤 별도 적재 — 이제 수집기가 직접 넣으므로 비어 있다.
     #   load_to_pg.py · load_daily_volume.py 는 남겨뒀다. 이미 받아둔 CSV 를
     #   넣거나 과거분을 복구할 때 쓴다.
-    after = {}
+    #   ★ 예측을 민 뒤에 달력도 같이 민다 (2026-09-04).
+    #
+    #     "당일 배치가 없다" 는 사실 하나에 세 가지 뜻이 섞여 있다 —
+    #     공휴일(정상) · ML 미실행(비정상) · 적재 지연(비정상).
+    #     구분할 재료(조사일·경매일·공휴일)를 가진 것은 우리뿐이다.
+    #     마스터가 inputs.py 에 "마스터는 그것을 구분할 수 없다" 고
+    #     적어 둔 자리다.
+    #
+    #     달력을 밀면 저쪽 v_ml_batch_days 가 넷 중 하나로 답한다.
+    #     ★ 주 용도는 **우리 자신의 감시**다 — not_run 을 알아야 하는 건
+    #       우리다. 마스터는 판정이 안 바뀌므로 당장 안 읽는다.
+    #
+    #     실패해도 배치는 안 세운다 (아래 run 은 실패 시 push 를 실패로
+    #     만든다 — 그건 곤란하므로 warn_only 로 둔다).
+    after = {"push": [[PY, "push_calendar.py", "--commit"]]}
 
     failed, done = [], []
     rid = run_begin(conn, plan)
@@ -604,12 +618,18 @@ def main():
             c = cmd or dyn[name]
             ok, tail = run(c, cwd, log, timeout=3600)
             if ok and name in after:
+                #   ★ 곁들이는 실패해도 그 단계를 실패로 만들지 않는다
+                #     (2026-09-04). 지금 여기 있는 것은 달력 밀기인데,
+                #     예측은 이미 나갔으므로 달력이 실패했다고 push 를
+                #     실패로 부르면 **경보가 사실과 달라진다.**
+                #     다만 조용히 넘기지 않고 꼬리에 붙여 눈에 띄게 한다.
                 steps = after[name]
                 steps = steps if isinstance(steps[0], list) else [steps]
                 for st in steps:
-                    ok, tail = run(st, cwd, log, timeout=1800)
-                    if not ok:
-                        break
+                    ok2, t2 = run(st, cwd, log, timeout=1800)
+                    tail = (tail or "") + chr(10) + (
+                        t2.strip().splitlines()[-1] if (ok2 and t2.strip())
+                        else "★ 곁들이 실패 (배치는 계속): %s" % " ".join(st[1:2]))
 
         #   경락가 말고 다른 수집기도 같은 눈으로 본다.
         if ok and name in GAP_CHECKS:
