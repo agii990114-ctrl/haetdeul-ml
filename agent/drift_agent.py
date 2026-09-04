@@ -40,8 +40,19 @@ from core import BAD, OK, WARN, Finding, Report, db  # noqa: E402
 
 #: 한 주 한 조합에 이만큼은 있어야 판정한다. 적으면 방향이 시드처럼 흔들린다.
 MIN_ROWS = 60
-#: 기준선보다 이만큼(%p) 아래로 떨어지면 '나쁜 주'
-DROP_PP = 10.0
+#: 모델 오차가 앵커 오차보다 이만큼(%p) 크면 '나쁜 주'
+#
+#   ★ 처음에는 "기준선(과거 중앙값)보다 10%p 아래" 로 짰다가 고쳤습니다 (2026-09-04).
+#     기준선이 높은 조합에서는 **이기고 있는 주까지 '나쁜 주'** 가 됐습니다.
+#     실측: whsl 배추 기준선 +58.8% -> 문턱 +48.8% -> +3.8%, +29.0% 인 주도
+#     '나쁨' 으로 세어 '3주 연속' 이 울었습니다. 두 주는 앵커를 이겼는데도요.
+#
+#   그리고 개선율은 **비율**이라 앵커가 아주 정확한 주에 폭발합니다.
+#     실측: 앵커 4.0% · 모델 14.6% -> -263.9%. 신호가 아니라 나눗셈 탓입니다.
+#
+#   그래서 **오차의 차이(%p)** 로 봅니다. '모델이 앵커보다 1%p 넘게 나쁘다' 는
+#   부풀지도 폭발하지도 않고, 읽는 사람이 바로 뜻을 압니다.
+GAP_PP = 1.0
 #: 나쁜 주가 이만큼 연속이면 알린다
 STREAK = 3
 #: 기준선을 잡을 때 쓰는 과거 주 수 (최근 구간은 뺀다)
@@ -73,7 +84,7 @@ SELECT wk, target_kind, item_nm, n,
 OPS = ["ops_auc", "ops_whsl", "ops_rtl"]
 
 
-def gather(min_rows: int, drop_pp: float, streak: int) -> Report:
+def gather(min_rows: int, gap_pp: float, streak: int) -> Report:
     rep = Report("드리프트감지")
     with db() as c:
         rows = c.execute(SQL, (OPS,)).fetchall()
@@ -105,11 +116,14 @@ def gather(min_rows: int, drop_pp: float, streak: int) -> Report:
         recent = usable[-streak:]
         base_pool = usable[:-streak][-BASE_WEEKS:]
         base = sorted(w["gain"] for w in base_pool)[len(base_pool) // 2]   # 중앙값
-        bad = [w for w in recent if w["gain"] < base - drop_pp]
+        #   나쁜 주 = 모델 오차가 앵커 오차보다 gap_pp 넘게 크다.
+        #   비율(개선율)로 재면 앵커가 정확한 주에 폭발한다 (위 GAP_PP 주석).
+        bad = [w for w in recent if (w["wmape"] - w["anchor"]) > gap_pp]
 
-        nums = [("기준선(과거 %d주 중앙값)" % len(base_pool), f"{base:+.1f}%")] + [
-            (str(w["wk"]), "%+.1f%% (모델 %.1f%% · 앵커 %.1f%% · %d행)"
-             % (w["gain"], w["wmape"], w["anchor"], w["n"])) for w in recent]
+        nums = [("참고 · 과거 %d주 개선율 중앙값" % len(base_pool), f"{base:+.1f}%")] + [
+            (str(w["wk"]), "모델 %.1f%% · 앵커 %.1f%% (차 %+.1f%%p · %d행)"
+             % (w["wmape"], w["anchor"], w["wmape"] - w["anchor"], w["n"]))
+            for w in recent]
 
         if len(bad) == streak:
             rep.add(Finding(
@@ -119,10 +133,10 @@ def gather(min_rows: int, drop_pp: float, streak: int) -> Report:
                 nums))
         elif bad:
             rep.add(Finding(
-                WARN, f"{kind} {item} — 최근 {len(bad)}주가 기준선 아래입니다",
+                WARN, f"{kind} {item} — 최근 {len(bad)}주가 앵커보다 나쁩니다",
                 f"{streak}주 연속이면 알립니다. 아직 아닙니다.", nums))
         else:
-            rep.add(Finding(OK, f"{kind} {item} — 기준선 유지", numbers=nums[:2]))
+            rep.add(Finding(OK, f"{kind} {item} — 앵커보다 낫거나 비슷", numbers=nums[:2]))
 
     if judged == 0:
         rep.add(Finding(WARN, "판정한 조합이 하나도 없습니다",
@@ -134,11 +148,11 @@ def gather(min_rows: int, drop_pp: float, streak: int) -> Report:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-rows", type=int, default=MIN_ROWS)
-    ap.add_argument("--drop-pp", type=float, default=DROP_PP)
+    ap.add_argument("--gap-pp", type=float, default=GAP_PP)
     ap.add_argument("--streak", type=int, default=STREAK)
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
-    rep = gather(a.min_rows, a.drop_pp, a.streak)
+    rep = gather(a.min_rows, a.gap_pp, a.streak)
     if not (a.quiet and rep.worst == OK):
         print(rep.text())
     print("[기록] %s" % rep.save())
