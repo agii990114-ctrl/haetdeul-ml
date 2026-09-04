@@ -61,6 +61,115 @@ TRANSIENT = ("timeout", "timed out", "시간 초과", "connection reset",
 
 # ── 1층 · 규칙 ──────────────────────────────────────────────────────
 
+def always_checks(rep, facts):
+    """배치 결과와 **상관없이 매번 보는 것**.
+
+    ## 왜 따로 빼나
+
+    예전에는 배치가 성공하면 `gather()` 가 "정상 종료" 한 줄만 찍고
+    **그대로 돌아갔다.** 그래서 성공한 날에는 전달표를 아예 안 봤다.
+
+    "배치가 성공했다" 는 **"예측이 매입 파트에 닿았다" 가 아니다.**
+    우리가 여러 번 걸린 자리다 — 검사가 돌았나가 아니라
+    **검사가 실제로 무엇을 봤나**.
+
+    조용할 때는 조용하다 — 정상이면 OK 한 줄씩만 남는다.
+    """
+    #   ── 지나간 침묵 ──────────────────────────────────────────────
+    #
+    #   ★ PC 가 꺼져 있으면 배치도 점검도 안 돕니다. 그러면 **아무도
+    #     안 울립니다** — 경보를 낼 프로그램 자체가 안 도니까요.
+    #
+    #     그리고 PC 가 돌아와 배치가 성공하면 전달 지연이 0 이 되어
+    #     **지나간 침묵이 흔적 없이 사라집니다.** 매입 파트는 그동안
+    #     옛 값을 보고 판단했는데 아무도 그 사실을 모릅니다.
+    #
+    #     그래서 "지금 늦었나" 말고 **"안 돈 구간이 있었나"** 를 따로 봅니다.
+    #     push 를 끝까지 돈 성공 실행들 사이의 간격을 재고, 30시간을
+    #     넘긴 구간을 찾습니다 (하루 한 번 도니 24시간이 정상, 30은 여유).
+    #
+    #     ★ 창을 이레로 둡니다. 3주로 두면 이미 지나간 일이 3주 내내
+    #       울어 소음이 됩니다 — 매일 우는 경보는 아무도 안 봅니다.
+    try:
+        with db() as c:
+            gaps = c.execute(
+                "WITH ok_runs AS ("
+                "  SELECT r.run_id, r.started_at"
+                "    FROM batch_run r JOIN batch_run_stage s USING(run_id)"
+                "   WHERE s.stage='push' AND s.ok AND r.status='ok'"
+                "     AND r.started_at >= now() - INTERVAL '7 days'"
+                "   GROUP BY 1,2),"
+                "seq AS ("
+                "  SELECT started_at,"
+                "         lag(started_at) OVER (ORDER BY started_at) AS prev"
+                "    FROM ok_runs)"
+                "SELECT (prev AT TIME ZONE 'Asia/Seoul')::timestamp(0)::text,"
+                "       (started_at AT TIME ZONE 'Asia/Seoul')::timestamp(0)::text,"
+                "       round(EXTRACT(EPOCH FROM (started_at - prev))/3600)::int"
+                "  FROM seq WHERE prev IS NOT NULL"
+                "   AND started_at - prev > INTERVAL '30 hours'"
+                " ORDER BY 1").fetchall()
+            last = c.execute(
+                "SELECT round(EXTRACT(EPOCH FROM (now() - max(r.started_at)))/3600)::int"
+                "  FROM batch_run r JOIN batch_run_stage s USING(run_id)"
+                " WHERE s.stage='push' AND s.ok AND r.status='ok'").fetchone()
+        since = int(last[0]) if last and last[0] is not None else None
+        facts["hours_since_push"] = since
+        if since is not None and since > 30:
+            rep.add(Finding(BAD, f"예측이 {since}시간째 안 나갔습니다",
+                            "PC 가 꺼져 있었거나 배치가 안 돌았습니다. "
+                            "매입 파트는 그동안 옛 값을 봅니다.",
+                            [("마지막 전달", f"{since}시간 전"),
+                             ("정상", "하루 한 번 · 24시간")]))
+        elif gaps:
+            #   지금은 정상인데 **지나간 구간**이 있었다.
+            #   고칠 것은 없지만 "그때 옛 값이 나갔다" 는 사실은 남긴다.
+            worst = max(g[2] for g in gaps)
+            rep.add(Finding(WARN,
+                            f"지난 이레에 배치가 멈춘 구간이 {len(gaps)}번 있었습니다",
+                            "지금은 정상입니다. 그때 매입 파트는 옛 값을 봤습니다.",
+                            [(f"{g[0]} → {g[1]}", f"{g[2]}시간") for g in gaps[:5]]
+                            + [("가장 긴 것", f"{worst}시간")]))
+        else:
+            rep.add(Finding(OK, "배치가 거른 날 없음",
+                            numbers=[("마지막 전달",
+                                      f"{since}시간 전" if since is not None else "-")]))
+    except Exception as e:                                   # noqa: BLE001
+        rep.add(Finding(WARN, "거른 날 확인 실패", f"{type(e).__name__}: {e}"))
+
+    try:
+        with db(service=True) as c:
+            r = c.execute(
+                "WITH latest AS ("
+                "  SELECT base_dt FROM haetdeul.ml_price_forecasts"
+                "   ORDER BY base_dt DESC LIMIT 1)"
+                "SELECT f.base_dt::text,"
+                "       MAX(f.created_at AT TIME ZONE 'Asia/Seoul')::timestamp(0)::text,"
+                "       (CURRENT_DATE - MAX(f.created_at AT TIME ZONE 'Asia/Seoul')::date),"
+                "       COUNT(*)"
+                "  FROM haetdeul.ml_price_forecasts f"
+                "  JOIN latest l ON l.base_dt = f.base_dt"
+                " GROUP BY 1").fetchone()
+        if r and r[1]:
+            lag = int(r[2] or 0)
+            facts["delivery_lag"] = lag
+            base_gap = ((datetime.date.today() - datetime.date.fromisoformat(r[0])).days
+                        if r[0] else None)
+            rep.add(Finding(
+                BAD if lag >= 2 else (WARN if lag == 1 else OK),
+                f"매입 파트 전달표 — 최신 예측이 {lag}일 전에 적재됨",
+                #   정상이면 아무 말도 안 한다. 제목에 이미 며칠 전인지 있다.
+                ("예측이 안 나가면 매입 판단이 옛 값으로 이뤄집니다."
+                 if lag >= 2 else ""),
+                [("가장 최근 기준일", f"{r[0]} (오늘과 {base_gap}일 차 · 1~3일은 정상)"),
+                 ("그 기준일이 적재된 시각", r[1]),
+                 ("행수", f"{r[3]:,}행")]))
+    except Exception as e:                                   # noqa: BLE001
+        rep.add(Finding(WARN, "전달표 확인 실패", f"{type(e).__name__}"))
+
+    return rep, facts
+
+
 def gather(run_id: int | None) -> tuple[Report, dict]:
     """규칙만으로 사실을 모은다. AI 없이 끝까지 돈다."""
     rep = Report("배치장애조사")
@@ -73,14 +182,14 @@ def gather(run_id: int | None) -> tuple[Report, dict]:
             (run_id,) if run_id else ()).fetchone()
         if not row:
             rep.add(Finding(WARN, "실행 기록이 없습니다"))
-            return rep, facts
+            return always_checks(rep, facts)
         rid, started, status, n_ok, n_fail, note = row
         facts["run_id"] = rid
 
         if status == "ok":
             rep.add(Finding(OK, f"run {rid} 정상 종료",
                             f"{started} · 성공 {n_ok} · 실패 {n_fail}"))
-            return rep, facts
+            return always_checks(rep, facts)
 
         #   ★ 아직 도는 중인 것을 실패로 보지 않는다 (2026-09-02 수정).
         #
@@ -113,7 +222,7 @@ def gather(run_id: int | None) -> tuple[Report, dict]:
                                 f"{started} 시작"
                                 + (f" · {int(mins)}분 경과" if mins is not None else "")
                                 + f" · 지금까지 성공 {n_ok} · 실패 {n_fail}"))
-            return rep, facts
+            return always_checks(rep, facts)
 
         # 실패한 단계와 오류 원문
         stages = c.execute(
@@ -222,37 +331,7 @@ def gather(run_id: int | None) -> tuple[Report, dict]:
     #
     #     이제 **가장 최근 기준일의 행**만 보고, 그 행이 언제 적재됐는지 잰다.
     #     기준일과 적재 시각이 반드시 같은 행에서 나온다.
-    try:
-        with db(service=True) as c:
-            r = c.execute(
-                "WITH latest AS ("
-                "  SELECT base_dt FROM haetdeul.ml_price_forecasts"
-                "   ORDER BY base_dt DESC LIMIT 1)"
-                "SELECT f.base_dt::text,"
-                "       MAX(f.created_at AT TIME ZONE 'Asia/Seoul')::timestamp(0)::text,"
-                "       (CURRENT_DATE - MAX(f.created_at AT TIME ZONE 'Asia/Seoul')::date),"
-                "       COUNT(*)"
-                "  FROM haetdeul.ml_price_forecasts f"
-                "  JOIN latest l ON l.base_dt = f.base_dt"
-                " GROUP BY 1").fetchone()
-        if r and r[1]:
-            lag = int(r[2] or 0)
-            facts["delivery_lag"] = lag
-            base_gap = ((datetime.date.today() - datetime.date.fromisoformat(r[0])).days
-                        if r[0] else None)
-            rep.add(Finding(
-                BAD if lag >= 2 else (WARN if lag == 1 else OK),
-                f"매입 파트 전달표 — 최신 예측이 {lag}일 전에 적재됨",
-                #   정상이면 아무 말도 안 한다. 제목에 이미 며칠 전인지 있다.
-                ("예측이 안 나가면 매입 판단이 옛 값으로 이뤄집니다."
-                 if lag >= 2 else ""),
-                [("가장 최근 기준일", f"{r[0]} (오늘과 {base_gap}일 차 · 1~3일은 정상)"),
-                 ("그 기준일이 적재된 시각", r[1]),
-                 ("행수", f"{r[3]:,}행")]))
-    except Exception as e:                                   # noqa: BLE001
-        rep.add(Finding(WARN, "전달표 확인 실패", f"{type(e).__name__}"))
-
-    return rep, facts
+    return always_checks(rep, facts)
 
 
 # ── 2층 · AI ────────────────────────────────────────────────────────
