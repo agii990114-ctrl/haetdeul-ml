@@ -1047,6 +1047,37 @@ def do_ml(name, conn, log, a, today):
             if bad:
                 #   실패로 만들지는 않는다. 다만 눈에 띄게 남긴다.
                 notes.append("[주의] 점 예측이 달라진 행이 있습니다 (%d)" % bad)
+        #   ── 게이트 끈 그림자 (2026-09-04 · 백로그 M-13) ──────────────
+        #
+        #   ★ 중도매 양파는 "나쁘다" 가 아니라 **"잴 수 없다"** 였다.
+        #     품질 게이트가 2026 예측 2,652행 중 2,604행(98%)을 앵커로
+        #     바꿔서, 표에 남는 값이 앵커와 앵커의 비교다.
+        #     **막았으니 못 재고, 못 재니 계속 막힌다.**
+        #
+        #   백필로 재 보니 게이트를 끄면 2026 세 분기 전부 양수였다
+        #   (+7.6% · +10.7% · +17.9% · n=2,472). 셋 중 유일하게 부호가
+        #   일치한다. 안 막힌 무(-0.3%)·배추(-1.9%)가 오히려 갈린다.
+        #
+        #   다만 그 근거는 **자료가 다 채워진 뒤** 만든 것이라 실시간보다
+        #   유리한 조건이다. 그래서 **차단은 그대로 두고** 매일 옆에서
+        #   같이 돌려 기록만 한다. 2주 뒤(9/17) 실시간이 같은 방향이면 푼다.
+        #
+        #   `shadow_whsl_nogate` 라는 딴 이름으로 넣는다. 우리 도구는
+        #   전부 model_ver = ANY(ops_*) 로 거르므로 운영 수치에 안 섞인다
+        #   (2026-08-31 에 ops-* 와 ops_* 를 섞어 오보한 적이 있다).
+        src = out / "pi_whsl.csv"
+        if src.exists() and (KIT / "ops_whsl").exists():
+            dst = out / "shadow_whsl_nogate.csv"
+            ok2, t2 = run([PY, "predict.py", str(src), "--model-dir", "ops_whsl",
+                           "--model-ver", "shadow_whsl_nogate", "--no-quality",
+                           "--out", str(dst)], KIT, log, timeout=900)
+            if ok2:
+                ok3, t3 = run([PY, "load_predictions.py", str(dst)],
+                              KIT, log, timeout=600)
+                notes.append("게이트 끈 그림자 적재" if ok3 else "게이트 끈 그림자 적재 실패")
+            else:
+                notes.append("게이트 끈 그림자 추론 실패")
+
         return True, " · ".join(notes) if notes else "비교할 것이 없었습니다"
 
     if name == "load":

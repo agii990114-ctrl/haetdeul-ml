@@ -61,7 +61,10 @@ async function call<T>(path: string): Promise<T> {
 export const AS_OF = process.env.NEXT_PUBLIC_AS_OF ?? "2025-12-31";
 
 export const meta = () => call<Meta>("/meta");
-export const baseDates = () => call<BaseDate[]>("/forecast/base-dates?limit=90");
+//  ★ 90 -> 400 (2026-09-04). 2026 기준일 137개를 백필하자 목록이 잘려
+//    1월이 화면에서 사라졌다. "지워졌나" 로 보이지만 잘린 것이었다.
+//    서버 상한이 400 이다.
+export const baseDates = () => call<BaseDate[]>("/forecast/base-dates?limit=400");
 /**
  * `showActual` — 실제값을 함께 받을지.
  *
