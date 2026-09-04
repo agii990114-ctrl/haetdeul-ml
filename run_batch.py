@@ -784,8 +784,66 @@ def do_rebuild(conn, log):
         n, mx = cur.fetchone()
         cur.execute("SELECT COUNT(*), MAX(base_dt) FROM predict_input")
         pn, pmx = cur.fetchone()
-    return True, ("crop_price_train %s행 · ~%s\npredict_input %s행 · ~%s\n  (%.0f초)"
-                  % (format(n, ","), mx, format(pn, ","), pmx, time.time() - t0))
+    head = ("crop_price_train %s행 · ~%s\npredict_input %s행 · ~%s\n  (%.0f초)"
+            % (format(n, ","), mx, format(pn, ","), pmx, time.time() - t0))
+
+    ok, vmsg = verify_rebuild(conn, log)
+    if vmsg:
+        head = head + "\n" + vmsg
+    return ok, head
+
+
+def verify_rebuild(conn, log):
+    """재생성 결과를 **읽고 판단한다** (2026-09-04).
+
+    ## 왜 따로 읽나
+
+    v5 안에도 검증 쿼리가 있다. 그런데 do_rebuild 가 v5 를 한 덩어리로
+    실행하면서 ``while cur.nextset(): pass`` 로 **결과 집합을 전부 버린다.**
+    사람이 DBeaver 로 돌릴 때만 보이고 **무인 실행에서는 아무도 안 본다.**
+
+    실제로 2026-08-27 ~ 09-04 **일주일 동안** 검증 [14] 가 100% 불일치를
+    내고 있었는데 아무도 몰랐다. **검사가 있는 것과 검사가 읽히는 것은 다르다.**
+
+    ## 판정
+
+        BAD  > 0    배치를 세운다 — 이대로 내보내면 안 되는 것만 BAD 다
+        WARN > 0    알리고 계속한다
+
+    검사 자체가 깨지면 **배치는 안 세운다.** 알리다 죽으면 본말전도다.
+    다만 그 사실을 눈에 띄게 찍는다 — 조용히 통과한 것처럼 보이면 안 된다.
+    """
+    f = ROOT / "SQL" / "verify_after_rebuild.sql"
+    if not f.exists():
+        log.write("검사 파일이 없습니다: %s\n" % f)
+        return True, "★ 재생성 검사 안 함 — %s 가 없습니다" % f.name
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f.read_text(encoding="utf-8"))
+            rows = cur.fetchall()
+    except Exception as e:                                   # noqa: BLE001
+        conn.rollback()
+        log.write("재생성 검사 실패: %s\n" % e)
+        return True, "★ 재생성 검사가 깨졌습니다 (배치는 계속) — %s" % str(e)[:150]
+
+    bad, warn, lines = [], [], []
+    for name, sev, n_bad, total, detail in rows:
+        mark = "  " if not n_bad else ("XX" if sev == "BAD" else "!!")
+        lines.append("%s %-30s %s %s/%s  %s"
+                     % (mark, name, sev, n_bad, total, (detail or "")[:60]))
+        if n_bad:
+            (bad if sev == "BAD" else warn).append(
+                "%s (%s/%s · %s)" % (name, n_bad, total, detail))
+    for ln in lines:
+        log.write("  " + ln + "\n")
+    if bad:
+        return False, ("재생성 검사 실패 — 예측을 내보내지 않습니다\n  "
+                       + ("\n  ".join(bad)) + "\n"
+                       + ("\n".join(lines)))
+    tail = "재생성 검사 %d건 통과" % len(rows)
+    if warn:
+        tail += " · 주의 %d건\n  " % len(warn) + ("\n  ".join(warn))
+    return True, tail
 
 
 def do_ml(name, conn, log, a, today):
