@@ -116,3 +116,35 @@ export interface HistoryDay {
   date: string;
   reports: HistoryItem[];
 }
+
+// ───────────────────────────────────────────────────────────── 재학습
+
+export interface RetrainCheck {
+  kind: string;
+  candidate: string;
+  eval_from: string;
+  /** 검증 통과 여부. **이게 false 면 서버가 적용을 거절한다.** */
+  passed: boolean;
+  verdict: string;
+  at: string;
+  findings: Finding[];
+}
+
+export interface RetrainStatus extends AgentReport {
+  kind: string;
+  /** 재학습 후보로 올라온 조합 수 */
+  candidates: number;
+  /** 마지막 검증 결과. 아직 없으면 null */
+  last_check: RetrainCheck | null;
+  job: { state: string; started: string | null; kind: string | null };
+  /** 되돌릴 수 있는 백업 이름들 (최신 순) */
+  backups: string[];
+}
+
+export interface RetrainJob {
+  state: "idle" | "running" | "done" | "failed";
+  started: string | null;
+  kind: string | null;
+  log: string[];
+  result: RetrainCheck | null;
+}

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AgentHistory } from "@/components/AgentHistory";
 import { AgentPanel } from "@/components/AgentPanel";
+import { RetrainPanel } from "@/components/RetrainPanel";
 import { ExplainPanel } from "@/components/ExplainPanel";
 import { ForecastChart } from "@/components/ForecastChart";
 import * as api from "@/lib/api";
@@ -29,7 +30,7 @@ const KINDS: { kind: TargetKind; label: string; role: string }[] = [
 /** 리드타임 3 미만은 모델을 안 쓴다 (어제 가격이 이미 정답에 가깝다). */
 const GATE_LEAD = 3;
 
-type Tab = "forecast" | "agents" | "history";
+type Tab = "forecast" | "agents" | "retrain" | "history";
 
 function Err({ e }: { e: unknown }) {
   const msg = e instanceof ApiError ? e.message : String(e);
@@ -127,6 +128,7 @@ export default function Console() {
           [
             ["forecast", "예측가 그래프"],
             ["agents", "지금 상태"],
+            ["retrain", "모델 관리"],
             ["history", "날짜별 기록"],
           ] as [Tab, string][]
         ).map(([t, label]) => (
@@ -366,6 +368,17 @@ export default function Console() {
               subtitle={`최근 ${quality.days}일 · 당연히 성립해야 하는 것만 봅니다`}
             />
           )}
+        </div>
+      )}
+
+      {/*
+        모델 관리 — 다시 배워야 하나, 후보를 만들까, 바꿀까.
+        ★ 패널이 스스로 서버에 물어봅니다. 여기서 미리 안 불러옵니다 —
+          이 탭을 안 열면 재학습 판정을 돌릴 이유가 없습니다.
+      */}
+      {tab === "retrain" && (
+        <div className="grid gap-7">
+          <RetrainPanel kind="auc" />
         </div>
       )}
 
