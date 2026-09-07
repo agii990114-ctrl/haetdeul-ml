@@ -28,6 +28,15 @@ def _decimal(value: object) -> Decimal | None:
     return number if number.is_finite() else None
 
 
+def _text(value) -> str:
+    """원천 값을 문자열로. **None 도 빈 문자열로 본다.**
+
+    `str(None)` 이 "None" 이 되는 것을 막는다. 그 문자열이 들어가면
+    뒤의 `or "미상"` 이 안 걸리고, 규격 필터가 통째로 빈다.
+    """
+    return "" if value is None else str(value).strip()
+
+
 def _format_decimal(value: Decimal, digits: int) -> str:
     quantum = Decimal(1).scaleb(-digits)
     text = format(value.quantize(quantum, rounding=ROUND_HALF_UP), "f")
@@ -73,14 +82,28 @@ def aggregate_date(
         assert total_kg is not None and package_qty is not None and total_won is not None
         quality.kg_rows += 1
 
-        market_code = str(raw.get("whsl_mrkt_cd", "")).strip()
-        market_name = str(raw.get("whsl_mrkt_nm", "")).strip() or "미상"
-        grade_code = str(raw.get("grd_cd", "")).strip()
-        grade_name = str(raw.get("grd_nm", "")).strip() or "미상"
-        subclass_code = str(raw.get("gds_sclsf_cd", "")).strip()
-        subclass_name = str(raw.get("gds_sclsf_nm", "")).strip() or "미상"
-        package_code = str(raw.get("pkg_cd", "")).strip()
-        package_name = str(raw.get("pkg_nm", "")).strip() or "미상"
+        #   ★ `raw.get(키, "")` 로는 못 막는다 (2026-09-07 · 매입 #250).
+        #
+        #     기본값은 **키가 없을 때만** 쓰인다. 원천이 키를 주면서 값을
+        #     `null` 로 주면 `str(None)` 이 되어 **문자열 "None"** 이 들어간다.
+        #     "None" 은 참이라 뒤의 `or "미상"` 도 안 걸린다.
+        #
+        #     실측 피해 (2026-09-03 하루)
+        #       package_name = "None" 249행 -> v5 규격 필터가 한 행도 못 걸러
+        #       **경락가 타겟이 그날 통째로 비었다** (배추·무·양파 각 18행 전부)
+        #     값이 틀린 게 아니라 **행이 사라진** 사고라 눈에 안 띈다.
+        #
+        #     쌓인 것: package_name 712행 · subclass_name 46,359 · grade_name 118
+        #
+        #     `_text()` 로 통일한다 — None 도 "" 도 같게 다룬다.
+        market_code = _text(raw.get("whsl_mrkt_cd"))
+        market_name = _text(raw.get("whsl_mrkt_nm")) or "미상"
+        grade_code = _text(raw.get("grd_cd"))
+        grade_name = _text(raw.get("grd_nm")) or "미상"
+        subclass_code = _text(raw.get("gds_sclsf_cd"))
+        subclass_name = _text(raw.get("gds_sclsf_nm")) or "미상"
+        package_code = _text(raw.get("pkg_cd"))
+        package_name = _text(raw.get("pkg_nm")) or "미상"
         # unit_qty 는 포장당 중량(kg). 규격을 가르는 핵심 값이라 키에 넣는다.
         unit_weight = _format_decimal(unit_qty, 3)  # type: ignore[arg-type]
         if not market_code:
