@@ -44,6 +44,7 @@ next person which mistake is easy to make. Nothing is deleted for looking bad.
 | C3 | Retail 100% NULL after a rebuild | Post-processing ran before the TRUNCATE |
 | C4 | Backfill reported success | CRLF put `\r` inside 137 filenames |
 | C5 | Predictions stored as 0.049 | The inverse transform was skipped |
+| C6 | One day's auction target entirely empty | The collector wrote the **string** `"None"` |
 
 ### D. It ran unattended and nobody was reading
 | # | Symptom | Actually |
@@ -885,6 +886,91 @@ pred = anchor * np.exp(model.predict(X))
 
 Any code path that produces a price must apply it. This is checked explicitly in
 new batch code.
+
+---
+
+## C6. The collector wrote the string "None", and a day's target vanished
+
+Found 2026-09-07, because the buying team asked about it.
+
+### Symptom
+
+Nothing. Forecasts shipped, the batch was green, every check passed.
+
+The buying team filed an issue: *"66 source rows on 09-03 are still 'None'."*
+**We replied that our table was fine** — we had looked at
+`ml_price_forecasts` while they meant `auction_prices_daily`. Two teams, two
+tables, one wrong answer.
+
+### Diagnosis
+
+Following it properly, the whole auction **target** for 2026-09-03 was NULL,
+for all three items:
+
+```
+2026-09-01   18 rows scored   avg 763.1
+2026-09-02   18 rows scored   avg 836.2
+2026-09-03    0 rows scored              <- gone
+2026-09-04   18 rows scored   avg 727.5
+```
+
+The cause is one line in the collector:
+
+```python
+str(raw.get("pkg_nm", "")).strip() or "미상"
+```
+
+**A `dict.get` default applies only when the key is absent, not when its value
+is null.** The source sent the key with a null value, so `str(None)` produced
+the string `"None"` — which is truthy, so the `or` fallback never fired either.
+
+Our rebuild pins the packaging spec with `package_name IN ('그물망','파렛트')`.
+Every row that day read `"None"`, so **nothing matched and the target was
+empty**.
+
+Accumulated silently across the table:
+
+```
+package_name     464 rows   (461 days, about one row a day)
+subclass_name  46,359 rows
+grade_name        118 rows
+```
+
+### Fix
+
+1. **Collector** — a `_text()` helper that treats `None` and `""` the same.
+2. **Data** — 46,941 `'None'` strings replaced with the intended fallback.
+3. **That day** — re-collected (249 -> **496 rows**), rebuilt, target restored
+   (cabbage 731.8, consistent with 763 / 836 / 727 around it).
+4. **Checks** — two added to `verify_after_rebuild.sql`: an auction-target hole
+   (BAD) and a `'None'` string in the last 7 days (WARN).
+5. **Docs** — `CLAUDE.md` said *"packaging form does not matter, weight does"*,
+   which had been true once and was reversed on 2026-08-27 after measurement.
+   The SQL comment holds the evidence: opening the packaging form drops cabbage
+   ACF(1) from 0.928 to 0.513. **Only the document was stale.**
+
+### The check had to be narrowed once
+
+The first version flagged **64 Saturdays**. Garak auctions on Saturdays but the
+price survey does not, so our target rows do not exist on those days at all —
+that is a known separate problem (A4), not a hole. Restricted to days that are
+both an auction day and a survey day, it reports zero.
+
+It also had to exclude genuinely empty days. **2026-02-24** has no target
+either, and that one is correct: Garak's special-grade cabbage that day was 11
+rows of small packs (mesh/pallet 10kg: zero, total volume 690kg). So the check
+counts only *"there was volume in our spec and still no target."*
+
+### Lesson
+
+**Two teams looking at two different tables can both be sure and one be wrong.**
+When someone reports a problem in "the source", confirm which table before
+answering.
+
+And this is C1/C2 again in a third disguise: **the value was never wrong, the
+rows simply stopped existing.** Nothing that watches values can see it. What
+finally caught it was someone outside our team asking a question — which is not
+a monitoring strategy.
 
 ---
 
@@ -1801,7 +1887,7 @@ If you read nothing else:
     answer *"if this fails, who finds out, and when?"* If the answer is "someone
     opens the file", it is not a check. (D1)
 13. **A failure alerts; an absence does not.** (D3)
-14. **Missing rows are harder to see than wrong values.** (C1-C3)
+14. **Missing rows are harder to see than wrong values.** (C1-C3, C6)
 15. **A false alarm every day teaches people to ignore the real one.** (D7)
 16. **Verify the premise before designing the experiment** — including premises
     in your own documents. (F3)
