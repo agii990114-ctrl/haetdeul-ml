@@ -503,3 +503,171 @@ def delivery(base_dt: str | None = None):
             d[k] = str(v) if isinstance(v, datetime.date) else num(v) if hasattr(v, "as_tuple") else v
         out.append(d)
     return {"base_dt": str(base_dt), "available": avail, "rows": out}
+
+
+# ═══════════════════════════════════════════════════════════ 재학습
+#
+#   ★ **화면에서 사람이 누를 수 있어야 한다.** 실사용자는 터미널을 안 씁니다.
+#
+#   그렇다고 자동으로 바꾸지는 않습니다. 누르는 자리가 둘입니다 —
+#   ① 후보 만들기  ② 적용하기. 사이에 검증이 들어갑니다.
+#
+#   실제로 오늘(2026-09-07) 그 검증이 한 번 막았습니다. "학습이 981일 낡았으니
+#   다시 배우자" 는 당연해 보이는 판단이었는데, 2년치를 더 배운 후보가
+#   2026 실전에서 배추 −10% 였습니다.
+
+import subprocess                                            # noqa: E402
+import sys as _sys                                           # noqa: E402
+import threading                                             # noqa: E402
+import json as _json                                         # noqa: E402
+
+_AGENT = ROOT / "agent"
+_KIT = ROOT / "ML" / "20260824" / "ml_train_kit_2"
+_RETRAIN_JSON = ROOT / "진행기록" / "agent_logs" / "_retrain_last.json"
+
+#: 한 번에 하나만 돕니다. 학습이 몇 분 걸리는데 둘이 겹치면 같은 폴더에 씁니다.
+_JOB: dict = {"state": "idle", "log": [], "started": None, "kind": None}
+_JOB_LOCK = threading.Lock()
+
+
+def _agent_path() -> None:
+    p = str(_AGENT)
+    if p not in _sys.path:
+        _sys.path.insert(0, p)
+
+
+@app.get("/retrain/status")
+def retrain_status(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
+    """다시 배워야 하나. DB 만 훑어서 몇 초면 끝납니다.
+
+    ★ 판정은 agent 가 합니다. 화면이 다시 계산하지 않습니다.
+    """
+    _agent_path()
+    import retrain_agent as ra                               # noqa: PLC0415
+    from core import Report                                  # noqa: PLC0415
+
+    rep = Report("재학습판정")
+    ra.check_stale(rep, [kind])
+    hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, ra.GAP_PP, ra.STREAK)
+    ra.verdict(rep, hits, [kind])
+
+    last = None
+    if _RETRAIN_JSON.exists():
+        try:
+            last = _json.loads(_RETRAIN_JSON.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = None
+
+    #   되돌릴 백업이 있나
+    backups = sorted((p.name for p in _KIT.glob(f"ops_{kind}_교체전_*")), reverse=True)
+
+    return {"name": rep.name, "verdict": rep.worst, "kind": kind,
+            "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
+            "findings": [asdict(f) for f in rep.findings],
+            "candidates": len(hits),
+            "last_check": last,
+            "job": {k: v for k, v in _JOB.items() if k != "log"},
+            "backups": backups}
+
+
+def _run_build(kind: str) -> None:
+    """후보를 만들고 검증한다. 배경에서 돈다 — 학습에 몇 분 걸린다."""
+    cmd = [_sys.executable, str(_AGENT / "retrain_build.py"),
+           "--kind", kind, "--save", "--json", str(_RETRAIN_JSON)]
+    try:
+        pr = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True,
+                              encoding="utf-8", errors="replace")
+        for line in pr.stdout:                               # type: ignore[union-attr]
+            with _JOB_LOCK:
+                _JOB["log"].append(line.rstrip())
+                del _JOB["log"][:-400]                       # 뒤 400줄만 둔다
+        pr.wait()
+        with _JOB_LOCK:
+            _JOB["state"] = "done" if pr.returncode == 0 else "failed"
+    except Exception as e:                                   # noqa: BLE001
+        with _JOB_LOCK:
+            _JOB["log"].append(f"{type(e).__name__}: {e}")
+            _JOB["state"] = "failed"
+
+
+@app.post("/retrain/build")
+def retrain_build(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
+    """후보를 만들고 검증한다. **적용은 안 한다.**"""
+    with _JOB_LOCK:
+        if _JOB["state"] == "running":
+            raise HTTPException(409, "이미 돌고 있습니다. 끝난 뒤에 다시 눌러 주세요.")
+        _JOB.update(state="running", log=[], kind=kind,
+                    started=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    threading.Thread(target=_run_build, args=(kind,), daemon=True).start()
+    return {"state": "running", "kind": kind}
+
+
+@app.get("/retrain/job")
+def retrain_job(tail: int = Query(60, ge=1, le=400)):
+    """돌고 있는 작업의 상태와 최근 줄."""
+    with _JOB_LOCK:
+        job = {k: v for k, v in _JOB.items() if k != "log"}
+        log = list(_JOB["log"][-tail:])
+    last = None
+    if _JOB["state"] == "done" and _RETRAIN_JSON.exists():
+        try:
+            last = _json.loads(_RETRAIN_JSON.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = None
+    return {**job, "log": log, "result": last}
+
+
+@app.post("/retrain/apply")
+def retrain_apply(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
+    """검증을 **통과한** 후보만 적용한다.
+
+    ★ 통과 못 한 것은 여기서 막습니다. 화면이 실수로 불러도 안 바뀝니다.
+    """
+    if not _RETRAIN_JSON.exists():
+        raise HTTPException(400, "검증 결과가 없습니다. 후보를 먼저 만들어 주세요.")
+    res = _json.loads(_RETRAIN_JSON.read_text(encoding="utf-8"))
+    if res.get("kind") != kind:
+        raise HTTPException(400, f"검증한 것은 {res.get('kind')} 입니다.")
+    if not res.get("passed"):
+        raise HTTPException(400,
+                            "검증을 통과하지 못한 후보입니다. 적용하지 않습니다. "
+                            f"(판정 {res.get('verdict')})")
+
+    _agent_path()
+    import retrain_build as rb                               # noqa: PLC0415
+    cur = _KIT / rb.BUNDLE[kind]
+    cand = _KIT / res["candidate"]
+    if not cand.exists():
+        raise HTTPException(404, f"후보 번들이 없습니다: {cand.name}")
+    rb.apply(kind, cur, cand)
+    return {"applied": res["candidate"], "kind": kind,
+            "backup": sorted((p.name for p in _KIT.glob(f"ops_{kind}_교체전_*")),
+                             reverse=True)[:1]}
+
+
+@app.post("/retrain/rollback")
+def retrain_rollback(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$"),
+                     backup: str | None = None):
+    """되돌린다. 백업 이름을 안 주면 가장 최근 것."""
+    import shutil                                            # noqa: PLC0415
+    _agent_path()
+    import retrain_build as rb                               # noqa: PLC0415
+
+    baks = sorted((p for p in _KIT.glob(f"ops_{kind}_교체전_*")), reverse=True)
+    if not baks:
+        raise HTTPException(404, "되돌릴 백업이 없습니다.")
+    if backup:
+        if not re.fullmatch(r"ops_(auc|whsl|rtl)_교체전_\d{8}", backup):
+            raise HTTPException(400, "읽을 수 없는 백업 이름입니다.")
+        src = _KIT / backup
+        if not src.exists():
+            raise HTTPException(404, f"백업이 없습니다: {backup}")
+    else:
+        src = baks[0]
+
+    cur = _KIT / rb.BUNDLE[kind]
+    if cur.exists():
+        shutil.rmtree(cur)
+    shutil.copytree(src, cur)
+    return {"restored": src.name, "kind": kind}

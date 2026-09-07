@@ -17,6 +17,8 @@ import type {
   Forecast,
   HistoryDay,
   Meta,
+  RetrainJob,
+  RetrainStatus,
   TargetKind,
 } from "./types";
 
@@ -51,6 +53,31 @@ async function call<T>(path: string): Promise<T> {
       else if (parsed.detail) detail = JSON.stringify(parsed.detail);
     } catch {
       /* JSON 이 아니면 본문을 그대로 쓴다 */
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return JSON.parse(body) as T;
+}
+
+/**
+ * 쓰기 요청. **읽기(`call`)와 나눠 둔다** — 실수로 GET 자리에 POST 가
+ * 들어가면 화면을 새로 그릴 때마다 재학습이 돈다.
+ */
+async function post<T>(path: string): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, { method: "POST" });
+  } catch {
+    throw new ApiError(0, "백엔드에 닿지 못했습니다.");
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      /* JSON 이 아니면 본문 그대로 */
     }
     throw new ApiError(response.status, detail);
   }
@@ -105,4 +132,30 @@ export const explain = (
     `/agent/explain?base_dt=${encodeURIComponent(baseDt)}` +
       `&item=${encodeURIComponent(item)}&kind=${kind}&lead=${lead}` +
       `&show_actual=${showActual}`,
+  );
+
+// ───────────────────────────────────────────────────────────── 재학습
+//
+//  ★ 두 번 누릅니다 — ① 후보 만들기 ② 적용하기. 사이에 검증이 들어갑니다.
+//    검증을 통과 못 하면 서버가 ②를 거절합니다 (화면이 막는 게 아니라).
+
+/** 다시 배워야 하나. 몇 초 걸린다. */
+export const retrainStatus = (kind: TargetKind = "auc") =>
+  call<RetrainStatus>(`/retrain/status?kind=${kind}`);
+
+/** 후보를 만들고 검증한다. **적용은 안 한다.** 몇 분 걸려 배경에서 돈다. */
+export const retrainBuild = (kind: TargetKind = "auc") =>
+  post<{ state: string; kind: string }>(`/retrain/build?kind=${kind}`);
+
+/** 돌고 있는 작업 상태와 최근 줄. */
+export const retrainJob = (tail = 60) => call<RetrainJob>(`/retrain/job?tail=${tail}`);
+
+/** 검증을 통과한 후보를 적용한다. 통과 못 했으면 서버가 거절한다. */
+export const retrainApply = (kind: TargetKind = "auc") =>
+  post<{ applied: string; backup: string[] }>(`/retrain/apply?kind=${kind}`);
+
+/** 되돌린다. 이름을 안 주면 가장 최근 백업. */
+export const retrainRollback = (kind: TargetKind = "auc", backup?: string) =>
+  post<{ restored: string }>(
+    `/retrain/rollback?kind=${kind}` + (backup ? `&backup=${encodeURIComponent(backup)}` : ""),
   );
