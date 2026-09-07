@@ -108,6 +108,17 @@ export const accuracy = (minLead = 3) => call<Accuracy>(`/accuracy?min_lead=${mi
 /** 데이터 품질 agent — DB 를 훑어 10초쯤 걸린다. 백엔드가 10분 캐시한다. */
 export const qualityAgent = (days = 180) => call<AgentReport>(`/quality?days=${days}`);
 
+/**
+ * 뉴스 agent — 오늘 기사에서 우리 품목 이야기를 골라 온다.
+ *
+ * ★ ollama 를 15번쯤 부르므로 30초쯤 걸린다. 백엔드가 30분 캐시한다.
+ *   AI 가 죽어도 빈칸이 안 온다 — 규칙으로 떨어지고 그 사실을 보고에 적는다.
+ */
+export const newsAgent = (date?: string) =>
+  call<AgentReport & { date: string }>(
+    "/agent/news" + (date ? `?date=${encodeURIComponent(date)}` : ""),
+  );
+
 /** 배치 장애 조사 agent — 규칙 부분만. AI 조사는 부르지 않는다. */
 export const batchAgent = () => call<AgentReport>("/agent/batch");
 

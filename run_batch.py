@@ -597,8 +597,19 @@ def main():
     #         이 단계가 하는 일은 **"눌러야 하나" 를 매일 적어두는 것**뿐이다.
     #
     #       기록은 진행기록/agent_logs/ 에 남아 화면 「날짜별 기록」에 뜬다.
+    #     ★ 뉴스도 여기 붙인다 (2026-09-07).
+    #
+    #       왜 곁들이인가: 우리 모델은 뉴스를 못 읽는다. 이건 **사람에게
+    #       주는 참고 자료**라, 못 받았다고 예측을 실패로 부르면 안 된다.
+    #
+    #       ★ 순서가 있다 — 받고(fetch) 나서 골라야(agent) 한다.
+    #         곁들이는 적은 순서대로 도니 이 배치로 충분하다.
+    #
+    #       걸리는 시간: 수집 15검색어 × 0.4초 + AI 가르기 30초쯤.
     after = {"push": [[PY, "push_calendar.py", "--commit"],
-                      [PY, str(ROOT / "agent" / "retrain_agent.py"), "--save"]]}
+                      [PY, str(ROOT / "agent" / "retrain_agent.py"), "--save"],
+                      [PY, str(ROOT / "데이터 수집" / "뉴스" / "fetch_naver_news.py")],
+                      [PY, str(ROOT / "agent" / "news_agent.py"), "--save"]]}
 
     failed, done = [], []
     rid = run_begin(conn, plan)
