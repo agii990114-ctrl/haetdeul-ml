@@ -129,6 +129,13 @@ export function RetrainPanel({ kind = "auc" }: { kind?: "auc" | "whsl" | "rtl" }
 
   useEffect(() => {
     void load();
+    //  창을 새로 열었을 때 **직전 작업이 실패로 끝나 있으면** 그 기록을
+    //  가져온다. 안 그러면 실패한 줄 모르고 다시 누르게 된다.
+    void retrainJob(60)
+      .then((j) => {
+        if (j.state === "failed" || j.state === "running") setJob(j);
+      })
+      .catch(() => {});
   }, [load]);
 
   //  돌고 있는 동안만 3초마다 물어본다. 끝나면 멈춘다 — 계속 물으면 서버가 논다.
@@ -141,7 +148,7 @@ export function RetrainPanel({ kind = "auc" }: { kind?: "auc" | "whsl" | "rtl" }
     }
     timer.current = setInterval(() => {
       void (async () => {
-        const j = await retrainJob(40);
+        const j = await retrainJob(60);
         setJob(j);
         if (j.state !== "running") void load();
       })();
@@ -280,8 +287,20 @@ export function RetrainPanel({ kind = "auc" }: { kind?: "auc" | "whsl" | "rtl" }
         ))}
       </ul>
 
-      {/* 돌고 있는 동안의 기록 */}
-      {running && job && (
+      {/*
+        돌고 있는 동안의 기록 — **실패했을 때도 보여준다.**
+
+        ★ 처음엔 running 일 때만 보여줬다. 그랬더니 학습이 죽으면 화면에
+          아무 일도 안 일어난 것처럼 보였다 (2026-09-07 실측: 윈도우 cp949
+          인코딩으로 train.py 가 죽었는데 버튼이 먹통으로 보였다).
+          **조용히 실패하는 것이 제일 나쁘다.**
+      */}
+      {job?.state === "failed" && (
+        <p className="m-0 text-[12px] font-semibold text-warn">
+          후보 만들기가 실패했습니다 — 아래 기록의 마지막 줄을 보세요.
+        </p>
+      )}
+      {(running || job?.state === "failed") && job && (
         <pre className="m-0 max-h-56 overflow-auto rounded-lg border border-line bg-sunk p-3 text-[11px] leading-relaxed">
           {job.log.length ? job.log.join("\n") : "시작하는 중…"}
         </pre>

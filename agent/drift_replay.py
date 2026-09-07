@@ -31,6 +31,19 @@ from core import db                                        # noqa: E402
 from drift_agent import SQL, OPS, MIN_ROWS, GAP_PP, STREAK, BASE_WEEKS   # noqa: E402
 
 
+#   ★ 자기 출력을 UTF-8 로 고정한다 (2026-09-07).
+#
+#     윈도우 기본이 cp949 라, 보고서에 '—'(em dash) 하나만 있어도
+#     UnicodeEncodeError 로 죽는다. 사람이 터미널에서 돌릴 때는
+#     PYTHONIOENCODING=utf-8 을 붙여 왔지만, **화면에서 부르면 그게
+#     안 넘어온다.** 부모에게 기대지 않고 여기서 직접 고정한다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
 def load() -> dict[tuple[str, str], list[dict]]:
     """(타겟, 품목) -> 주별 성적. drift_agent 와 같은 SQL 을 쓴다."""
     with db() as c:
