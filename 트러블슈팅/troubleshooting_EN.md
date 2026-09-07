@@ -83,6 +83,7 @@ next person which mistake is easy to make. Nothing is deleted for looking bad.
 |---|---|---|
 | G1 | Their repo looked like a 29-file skeleton | Our clone was 12 days stale; work was on `dev` |
 | G2 | Four contract mismatches | Their thresholds assumed an accuracy nobody has |
+| G3 | A scraper that had run for weeks | The site's `robots.txt` said `Disallow: /` |
 
 ---
 
@@ -1865,6 +1866,54 @@ first** — we did, and it was still their threshold.
 
 ---
 
+## G3. We checked robots.txt for one source and not the other
+
+Found 2026-09-07, while looking for *new* sources.
+
+### Symptom
+
+None. A small monthly script had been quietly scraping a site for weeks.
+
+### Diagnosis
+
+```
+https://www.garak.co.kr/robots.txt
+    User-agent: *
+    Disallow: /
+```
+
+`watch_garak_notice.py` fetches `garak.co.kr/homepage/M0000227/board` to find
+future market closures announced by notice.
+
+**The same week, the same author wrote a news collector that did check.** Its
+docstring lists all three newspapers' `robots.txt` rules and the courtesies it
+observes (1.5s between requests, no re-fetching, a self-identifying User-Agent).
+That care simply was not carried across to the other script.
+
+The scale was small — monthly, run by hand, not wired into the batch. It was
+still a violation.
+
+### Fix
+
+Stopped. The script now prints the reason and exits non-zero rather than
+running. The parsing code is kept as a record of what it did.
+
+Nothing was lost: the three future closures it had found are already in the
+override table, and past closures are derived from actual trading days
+(0 false positives, 0 misses) — which was always the authoritative method.
+
+### Lesson
+
+**A courtesy applied to one source is not a policy.** We had the right habit,
+written down in one file, and it did not transfer to the file next to it. The
+same shape as C2, where a warning sat in a document while the SQL went
+unfixed — knowing a rule and applying it everywhere are different things.
+
+And note how it surfaced: not from a check, but because we happened to look at
+`robots.txt` while shopping for a *different* source.
+
+---
+
 # The short version
 
 If you read nothing else:
@@ -1894,3 +1943,5 @@ If you read nothing else:
 17. **Record how a value was produced when you produce it.** (F2)
 18. **Write the sample count next to the conditions.** (F1)
 19. **A downstream threshold is an assumption about your accuracy.** (G2)
+20. **A courtesy applied to one source is not a policy.** Check every fetcher,
+    not the one you happen to be editing. (G3)

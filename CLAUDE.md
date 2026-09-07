@@ -733,6 +733,12 @@ ECOS 키는 이미 있습니다.
 
 ### 5.8 ref_calendar 규칙 (실측 수정)
 
+> **★ 게시판 감시는 멈췄습니다 (2026-09-07).** `garak.co.kr` 의 `robots.txt` 가
+> `Disallow: /`(전면 금지)인데 저희가 긁고 있었습니다. 같은 주에 만든 뉴스
+> 수집기는 세 신문사 `robots.txt` 를 다 확인했는데 **이건 안 봤습니다.**
+> 잃는 것은 없습니다 — 미래 시범휴업 3건은 이미 override 에 들어 있고,
+> 프로젝트가 2026-09-21 에 끝납니다. 다시 쓰려면 공식 경로를 찾아야 합니다.
+>
 > **비정기 휴장은 게시판이 아니라 실거래일로 찾습니다.** "규칙상 개장인데 거래 0건"
 > 을 뽑는 방법으로 14건을 찾아 오탐 0 · 미탐 0 을 만들었습니다. 공고 본문이
 > 대부분 이미지라 게시판은 신뢰할 수 없습니다. 게시판이 필요한 건 아직 지나지
@@ -873,7 +879,7 @@ load_peeled_garlic.py    깐마늘 소매가 적재
 경제 지표/load_to_pg.py                CSV → econ_daily_raw (구 CSV 복구용)
 _dbload.py                       ★ 수집기 공용 적재. 대조 후 UPSERT
 휴일 달력/fetch_holidays.py      KASI 특일 정보 → ref_holiday (연 1회)
-휴일 달력/watch_garak_notice.py  가락 휴업 공고 → override 후보 (월 1회)
+휴일 달력/watch_garak_notice.py  ★ 멈춤 (2026-09-07) — robots.txt 위반
 ```
 
 ### 문서
