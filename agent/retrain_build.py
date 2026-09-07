@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import io
 import shutil
 import subprocess
@@ -52,6 +53,19 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core import Finding, Report, OK, WARN, BAD              # noqa: E402
+
+#   ★ 자기 출력을 UTF-8 로 고정한다 (2026-09-07).
+#
+#     윈도우 기본이 cp949 라, 보고서에 '—'(em dash) 하나만 있어도
+#     UnicodeEncodeError 로 죽는다. 사람이 터미널에서 돌릴 때는
+#     PYTHONIOENCODING=utf-8 을 붙여 왔지만, **화면에서 부르면 그게
+#     안 넘어온다.** 부모에게 기대지 않고 여기서 직접 고정한다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT = ROOT / "ML" / "20260824" / "ml_train_kit_2"
@@ -180,7 +194,9 @@ def build(kind: str, csv: Path, cur_meta: dict, train_end: str, out: Path) -> No
             cmd += ["--quantile-rounds", str(cur_meta["quantile_rounds"])]
 
     print("  학습:", " ".join(cmd[1:6]), "...")
-    r = subprocess.run(cmd, cwd=KIT)
+    #   ★ train.py 도 같은 이유로 UTF-8 을 받아야 한다 (윈도우 cp949).
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    r = subprocess.run(cmd, cwd=KIT, env=env)
     if r.returncode != 0:
         raise SystemExit("학습이 실패했습니다. 위 출력을 보세요.")
 

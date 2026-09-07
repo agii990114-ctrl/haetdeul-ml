@@ -574,10 +574,17 @@ def _run_build(kind: str) -> None:
     """후보를 만들고 검증한다. 배경에서 돈다 — 학습에 몇 분 걸린다."""
     cmd = [_sys.executable, str(_AGENT / "retrain_build.py"),
            "--kind", kind, "--save", "--json", str(_RETRAIN_JSON)]
+    #   ★ 하위 프로세스에 UTF-8 을 물려준다 (2026-09-07).
+    #
+    #     윈도우 기본이 cp949 라, 학습 로그에 '—'(em dash) 하나만 있어도
+    #     UnicodeEncodeError 로 죽는다. 사람이 터미널에서 돌릴 때는
+    #     PYTHONIOENCODING=utf-8 을 붙여 왔는데, **화면에서 누르면
+    #     그게 안 넘어간다.** 그래서 버튼이 아무 일도 안 하는 것처럼 보였다.
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     try:
         pr = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace", env=env)
         for line in pr.stdout:                               # type: ignore[union-attr]
             with _JOB_LOCK:
                 _JOB["log"].append(line.rstrip())
