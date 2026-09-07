@@ -64,6 +64,7 @@ export default function Console() {
 
   const [quality, setQuality] = useState<AgentReport | null>(null);
   const [batch, setBatch] = useState<AgentReport | null>(null);
+  const [news, setNews] = useState<AgentReport | null>(null);
   const [agentErr, setAgentErr] = useState<unknown>(null);
 
   useEffect(() => {
@@ -102,14 +103,17 @@ export default function Console() {
   useEffect(loadForecast, [loadForecast]);
 
   useEffect(() => {
-    if (tab !== "agents" || quality || batch) return;
+    if (tab !== "agents" || quality || batch || news) return;
     //  둘을 따로 부른다. 하나가 실패해도 나머지는 뜬다 — agent 가 죽어서
     //  화면이 통째로 비면 "이상 없음" 으로 오해된다.
     //  ★ 여기서 오류를 미리 지우지 않는다. 이 효과는 처음 한 번만 도는데
     //    (quality·batch 가 차면 위에서 멈춘다) 지울 오류가 없다.
     api.qualityAgent(180).then(setQuality).catch(setAgentErr);
     api.batchAgent().then(setBatch).catch(setAgentErr);
-  }, [tab, quality, batch]);
+    //  ★ 뉴스는 30초쯤 걸린다 (ollama 를 15번 부른다). 나머지 둘이 먼저
+    //    뜨고 이건 나중에 채워진다 — 셋을 묶어 기다리면 화면이 30초 빈다.
+    api.newsAgent().then(setNews).catch(setAgentErr);
+  }, [tab, quality, batch, news]);
 
   return (
     <main className="mx-auto max-w-[1180px] px-6 py-8">
@@ -362,6 +366,12 @@ export default function Console() {
             </p>
           )}
           {batch && <AgentPanel report={batch} subtitle="배치가 실패했을 때만 할 말이 있습니다" />}
+          {news && (
+            <AgentPanel
+              report={news}
+              subtitle="우리 모델은 뉴스를 못 읽습니다 · 제목을 그대로 옮깁니다"
+            />
+          )}
           {quality && (
             <AgentPanel
               report={quality}

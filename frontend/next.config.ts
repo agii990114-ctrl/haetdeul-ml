@@ -11,7 +11,7 @@ import type { NextConfig } from "next";
  */
 const isDev = process.env.NODE_ENV === "development";
 /**
- * ★ 8100 이 아니라 8101 이다.
+ * ★ 8100 도 8101 도 8102 도 아니다. 지금은 8103 이다.
  *
  *   2026-08-31 에 8100 을 잡은 프로세스가 죽었는데 소켓만 남아, **옛 코드로
  *   응답하는 좀비**가 됐다. 새 서버는 "포트가 쓰이는 중" 이라며 못 뜨는데
@@ -22,7 +22,23 @@ const isDev = process.env.NODE_ENV === "development";
  *   API 가 404 를 내면 **포트를 누가 쥐고 있는지부터** 보라:
  *       netstat -ano | grep ":8102" | grep LISTENING
  */
-const backendOrigin = process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8102";
+/**
+ * ★ 2026-09-07 에 8102 도 같은 좀비가 됐다. 셋째다.
+ *
+ *   프로세스를 죽였는데 **소켓이 셋 남아** 옛 코드로 응답했다.
+ *   새 서버는 떴지만 요청이 좀비 쪽으로 갔다.
+ *
+ *       netstat -ano | grep ":8102" | grep LISTENING
+ *       TCP 127.0.0.1:8102 ... 38756   <- 죽은 프로세스
+ *       TCP 127.0.0.1:8102 ... 37784   <- 죽은 프로세스
+ *       TCP 127.0.0.1:8102 ... 2644    <- 죽은 프로세스
+ *       TCP 127.0.0.1:8102 ... 12740   <- 새로 띄운 것
+ *
+ *   ★ 증상이 "새로 만든 API 가 404" 다. 코드는 멀쩡한데 서버가 옛것이다.
+ *     세 번 다 같은 증상이었고 세 번 다 몇 분씩 헤맸다.
+ *     **API 가 404 를 내면 포트를 누가 쥐고 있는지부터 보라.**
+ */
+const backendOrigin = process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8103";
 
 /**
  * `agentRules: false` — Next 가 `CLAUDE.md`·`AGENTS.md` 를 자동 생성하는 걸 끈다.

@@ -678,3 +678,42 @@ def retrain_rollback(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$"),
         shutil.rmtree(cur)
     shutil.copytree(src, cur)
     return {"restored": src.name, "kind": kind}
+
+
+# ─────────────────────────────────────────────────────────── 뉴스
+#
+#   ★ 화면이 그릴 때마다 AI 를 부르지 않는다.
+#
+#     `quality` 처럼 캐시를 둔다. 뉴스 판정은 ollama 를 15번쯤 부르므로
+#     30초쯤 걸리고, 화면을 새로 그릴 때마다 돌 이유가 없다.
+#     **하루에 한 번 배치가 돌려 파일로 남기는 것이 정본**이고, 이건
+#     사람이 지금 보고 싶을 때 쓰는 자리다.
+
+_NEWSCACHE: dict = {}
+
+
+@app.get("/agent/news")
+def agent_news(date: str | None = None, use_ai: bool = True):
+    """뉴스 agent. 오늘 기사에서 우리 품목 이야기를 골라 넘긴다.
+
+    ★ AI 가 죽어도 화면은 빈칸이 안 된다 — 규칙으로 떨어지고 그 사실을
+      보고에 적는다 (`news_agent.classify` 참조).
+    """
+    day = date or datetime.date.today().isoformat()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise HTTPException(400, "날짜 모양이 아닙니다 (YYYY-MM-DD).")
+
+    now = datetime.datetime.now()
+    hit = _NEWSCACHE.get((day, use_ai))
+    if hit and (now - hit[0]).total_seconds() < 1800:        # 30분
+        return hit[1]
+
+    _agent_path()
+    import news_agent as na                                  # noqa: PLC0415
+
+    rep = na.build(day, use_ai=use_ai)
+    out = {"name": rep.name, "verdict": rep.worst, "date": day,
+           "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
+           "findings": [asdict(f) for f in rep.findings]}
+    _NEWSCACHE[(day, use_ai)] = (now, out)
+    return out

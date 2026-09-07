@@ -231,6 +231,88 @@ def tier1(r: dict) -> bool:
     return bool(RE_ITEM.search(t) and MARKET.search(t))
 
 
+# ─────────────────────────────────────────────────── 우리 예측과 대조
+#
+#   ★ **뉴스에서 방향을 종합하지 않는다.**
+#
+#     AI 에게 하루치를 요약시켜 봤더니 "가격이 급등" 이라 단정했는데,
+#     그날 제목은 오름과 내림이 같이 있었다 (2026-09-07 실측).
+#     그래서 여기서는 **제목에 실제로 있는 낱말만 센다.**
+#
+#   ⚠️ 낱말 세기의 한계를 미리 적는다
+#     "무·배추·대파 가격 **떨어지면**…정읍시 차액 지원" 은 조건문이지
+#     "떨어졌다" 가 아니다. 규칙은 이걸 내림으로 센다.
+#     **그래서 숫자만 보여주지 않고 제목을 다 보여준다.** 사람이 읽으면 안다.
+
+UP = re.compile(r"급등|폭등|치솟|올라|올랐|뛰어|뛰었|상승|↑|인상|비싸")
+DOWN = re.compile(r"급락|폭락|떨어|내려|내렸|하락|↓|인하|싸졌|약세")
+
+
+def forecast_now() -> dict[str, float]:
+    """오늘 기준일 경락가 예측이 앵커 대비 몇 % 인가 (LT3~14 평균).
+
+    못 읽으면 빈 dict 를 돌려준다 — **0 이나 추측을 넣지 않는다.**
+    """
+    try:
+        from core import db                                  # noqa: PLC0415
+        q = ("SELECT item_nm, "
+             "       (AVG(pred_prc)/NULLIF(AVG(anchor_prc),0)-1)*100 "
+             "  FROM prediction_log "
+             " WHERE model_ver='ops_auc' AND lead_biz_d BETWEEN 3 AND 14 "
+             "   AND base_dt=(SELECT MAX(base_dt) FROM prediction_log WHERE model_ver='ops_auc') "
+             " GROUP BY 1")
+        with db() as c:
+            return {r[0]: float(r[1]) for r in c.execute(q).fetchall() if r[1] is not None}
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
+def compare(rep: Report, ones: list[dict]) -> None:
+    """품목마다 '우리 예측' 과 '오늘 제목의 낱말' 을 나란히 놓는다."""
+    fc = forecast_now()
+    if not fc:
+        rep.add(Finding(WARN, "예측을 못 읽어 대조를 건너뜁니다",
+                        "prediction_log 에 오늘 기준일 경락가 예측이 있어야 합니다."))
+        return
+
+    for item in ITEMS:
+        pat = re.compile(r"배추" if item == "배추" else
+                         r"양파" if item == "양파" else
+                         r"(?<![가-힣])무(?![가-힣])|무값|월동무|가을무|총각무")
+        hits = [r for r in ones if pat.search(r["title"])]
+        chg = fc.get(item)
+        if chg is None:
+            continue
+
+        up = sum(1 for r in hits if UP.search(r["title"]))
+        dn = sum(1 for r in hits if DOWN.search(r["title"]))
+        nums = [("우리 예측 (앵커 대비 · LT3~14)", f"{chg:+.1f}%"),
+                ("오늘 1군 기사", f"{len(hits)}건"),
+                ("제목에 오름말", f"{up}건"),
+                ("제목에 내림말", f"{dn}건")]
+        nums += [("", r["title"][:66]) for r in hits[:6]]
+
+        if not hits:
+            rep.add(Finding(OK, f"{item} — 오늘 기사가 없습니다",
+                            f"예측은 {chg:+.1f}% 입니다. 견줄 기사가 없다는 뜻이지\n"
+                            "'이상 없음' 이 아닙니다.", nums[:2]))
+            continue
+
+        #   어긋남 = 예측은 내리는데 제목엔 오름말이 더 많거나, 그 반대
+        clash = (chg < -1 and up > dn) or (chg > 1 and dn > up)
+        if clash:
+            rep.add(Finding(
+                BAD, f"{item} — 예측과 기사가 어긋납니다",
+                f"우리 예측은 {chg:+.1f}% 인데 제목에는 반대말이 더 많습니다.\n"
+                "★ **낱말을 센 것**이지 기사를 읽은 것이 아닙니다. 제목을 직접 보십시오.\n"
+                "  조건문(\"떨어지면\")도 내림으로 셉니다.",
+                nums,
+                "매입 파트에 알릴지 사람이 정하십시오."))
+        else:
+            rep.add(Finding(OK, f"{item} — 예측 {chg:+.1f}% · 기사 {len(hits)}건",
+                            "제목의 낱말과 크게 어긋나지 않습니다.", nums))
+
+
 def build(day: str, use_ai: bool) -> Report:
     rep = Report("뉴스요약")
     rows = read_rows(day)
@@ -276,6 +358,9 @@ def build(day: str, use_ai: bool) -> Report:
     else:
         rep.add(Finding(OK, "1군 없음 — 우리 품목 기사가 없습니다",
                         "'조용하다' 는 뜻입니다. 2군만 참고하십시오."))
+
+    #   ── 우리 예측과 대조 ────────────────────────────────────
+    compare(rep, ones)
 
     #   ── 2군: 묶어서 대표 제목만 ──────────────────────────────
     if twos:
