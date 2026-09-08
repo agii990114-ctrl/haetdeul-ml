@@ -56,6 +56,7 @@ next person which mistake is easy to make. Nothing is deleted for looking bad.
 | D5 | Actuals stopped appearing in the UI | Backfill loaded but never scored |
 | D6 | Drift alarms on healthy weeks | Drift measured as raw error, not gain over anchor |
 | D7 | Checker said "normal", 3 items were stale | **Three mistakes made while building the checker** |
+| D8 | A new endpoint 404s while the code plainly has it | A dead server still answering — **three times** |
 
 ### E. The experiment was valid, the conclusion was not
 | # | Symptom | Actually |
@@ -1225,6 +1226,80 @@ thresholds turn into an endless exception list (*"62.2% is fine, actually"*).
 
 ---
 
+## D8. A dead server kept answering, three times
+
+2026-09-08, after two earlier occurrences we worked around instead of fixing.
+
+### Symptom
+
+Add an endpoint, restart the backend, call it — **404**. The code plainly
+contains the route; importing the app directly lists it. Only the running
+server does not have it.
+
+The first two times we moved the backend to a different port and moved on.
+`next.config.ts` still carries the note from the first occurrence:
+
+> *"If an API 404s, first look at who holds the port."*
+
+We wrote that, and then went to the wrong port anyway on the third occurrence.
+
+### Diagnosis
+
+```
+netstat -ano | grep ":8102 " | grep LISTENING
+    ... 38756    process is dead
+    ... 37784    process is dead
+    ... 2644     process is dead
+    ... 12740    the one just started
+```
+
+Four listeners on one port, three of them owned by processes that no longer
+exist — and requests were being served by one of the dead ones.
+
+The cause is `--reload`:
+
+```
+uvicorn --reload starts TWO processes
+  parent   watches files      command line contains "uvicorn"
+  child    serves requests    command line is python -c "..."
+```
+
+**We had been killing by command line.** That matches the parent and misses the
+child, so every restart left one orphaned child still holding the socket.
+
+```
+8100  2 orphans     8101  2 orphans
+8102  4 orphans     8103  1 orphan
+```
+
+One per restart, accumulating for over a week.
+
+### Fix
+
+Kill by **port owner**, not by command line:
+
+```
+netstat -ano | grep ":8102 " | grep LISTENING   ->  kill that PID
+```
+
+Ten orphaned children removed; all four ports released at once. The backend
+went back to its original port, and the cause is now recorded in
+`next.config.ts` next to the symptom.
+
+### Lesson
+
+**A workaround that removes the symptom removes the reason to find the cause.**
+Moving to a fresh port worked twice, and each time it cost a few minutes and
+taught nothing — the third occurrence was identical to the first.
+
+And the note we had written did not save us: it said *look at who holds the
+port*, and we still looked at the port the frontend was **not** using. Same
+shape as C2 (a warning written in a document while the SQL went unfixed) and
+G3 (a courtesy applied to one file and not the one beside it): **knowing a
+rule and applying it at the moment it matters are different things.**
+
+---
+
 # E. The experiment was valid, the conclusion was not
 
 ## E1. One validation year decided a feature
@@ -1936,6 +2011,8 @@ If you read nothing else:
     answer *"if this fails, who finds out, and when?"* If the answer is "someone
     opens the file", it is not a check. (D1)
 13. **A failure alerts; an absence does not.** (D3)
+13b. **A workaround that removes the symptom removes the reason to find the
+    cause.** (D8)
 14. **Missing rows are harder to see than wrong values.** (C1-C3, C6)
 15. **A false alarm every day teaches people to ignore the real one.** (D7)
 16. **Verify the premise before designing the experiment** — including premises
