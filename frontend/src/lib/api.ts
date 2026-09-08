@@ -17,6 +17,7 @@ import type {
   Forecast,
   HistoryDay,
   Meta,
+  GraphStatus,
   RetrainJob,
   RetrainStatus,
   TargetKind,
@@ -170,3 +171,29 @@ export const retrainRollback = (kind: TargetKind = "auc", backup?: string) =>
   post<{ restored: string }>(
     `/retrain/rollback?kind=${kind}` + (backup ? `&backup=${encodeURIComponent(backup)}` : ""),
   );
+
+// ───────────────────────────────────────── 재학습 (LangGraph)
+//
+//  ★ 위의 retrain* 다섯과 **나란히** 있다. 지금 것을 안 지웠다.
+//    다른 점: 상태가 서버 메모리가 아니라 체크포인트에 있어
+//    **서버가 재시작돼도 작업이 남는다.**
+
+/** 지금 어디 서 있나. 체크포인트를 읽는다. */
+export const graphStatus = (kind: TargetKind = "auc") =>
+  call<GraphStatus>(`/retrain/graph/status?kind=${kind}`);
+
+/**
+ * 그래프를 굴린다.
+ *   answer 없음 = 처음부터 (판정)
+ *   "build"     = 후보를 만든다 (몇 분)
+ *   "apply"     = 운영 모델을 바꾼다
+ *   "stop"      = 그만둔다
+ */
+export const graphAct = (kind: TargetKind = "auc", answer?: "build" | "apply" | "stop") =>
+  post<{ started: boolean }>(
+    `/retrain/graph/act?kind=${kind}` + (answer ? `&answer=${answer}` : ""),
+  );
+
+/** 흐름만 처음으로 되돌린다. **모델은 안 건드린다.** */
+export const graphReset = (kind: TargetKind = "auc") =>
+  post<{ reset: string }>(`/retrain/graph/reset?kind=${kind}`);

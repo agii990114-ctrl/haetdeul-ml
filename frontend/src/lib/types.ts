@@ -148,3 +148,27 @@ export interface RetrainJob {
   log: string[];
   result: RetrainCheck | null;
 }
+
+// ─────────────────────────────────────────── 재학습 (LangGraph)
+
+export interface GraphAsk {
+  ask: string;
+  hint?: string;
+  verdict?: string;
+  candidates?: [string, string][];
+  candidate?: string;
+  verify?: string;
+}
+
+export interface GraphStatus {
+  kind: string;
+  /** 다음에 돌 노드. 빈 배열이면 끝났거나 시작 전 */
+  next: string[];
+  /** 그래프가 들고 있는 값 (판정·후보·검증 결과) */
+  values: Record<string, unknown>;
+  /** 사람에게 묻고 있는 것. null 이면 안 묻는 중 */
+  asking: GraphAsk | null;
+  running: { busy: boolean; since: string | null; answer: string | null };
+  judge_text?: string | null;
+  build_tail?: string | null;
+}
