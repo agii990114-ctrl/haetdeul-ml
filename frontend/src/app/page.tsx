@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AgentHistory } from "@/components/AgentHistory";
 import { AgentPanel } from "@/components/AgentPanel";
+import { RetrainGraphPanel } from "@/components/RetrainGraphPanel";
 import { RetrainPanel } from "@/components/RetrainPanel";
 import { ExplainPanel } from "@/components/ExplainPanel";
 import { ForecastChart } from "@/components/ForecastChart";
@@ -387,8 +388,19 @@ export default function Console() {
           이 탭을 안 열면 재학습 판정을 돌릴 이유가 없습니다.
       */}
       {tab === "retrain" && (
-        <div className="grid gap-7">
-          <RetrainPanel kind="auc" />
+        <div className="grid gap-9">
+          {/*
+            둘을 나란히 둡니다 — 위가 새로 만든 상태 기계, 아래가 지금까지 쓰던 것.
+            ★ 지금 것을 안 지웠습니다. 새것이 잘못돼도 잃는 게 없습니다.
+          */}
+          <RetrainGraphPanel kind="auc" />
+          <div className="border-t border-line pt-7">
+            <p className="m-0 mb-3 text-[11.5px] text-muted">
+              아래는 지금까지 쓰던 방식입니다. 견주려고 남겨 뒀습니다 —
+              <b> 서버가 재시작되면 작업이 사라집니다.</b>
+            </p>
+            <RetrainPanel kind="auc" />
+          </div>
         </div>
       )}
 

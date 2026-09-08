@@ -717,3 +717,121 @@ def agent_news(date: str | None = None, use_ai: bool = True):
            "findings": [asdict(f) for f in rep.findings]}
     _NEWSCACHE[(day, use_ai)] = (now, out)
     return out
+
+
+# ═══════════════════════════════════════════════ 재학습 (LangGraph)
+#
+#   ★ 위의 /retrain/* 다섯과 **나란히** 둡니다. 지금 것을 안 지웠습니다.
+#
+#   무엇이 다른가
+#     지금 것   작업 상태가 _JOB(파이썬 메모리)에 있다
+#               -> 서버가 재시작되면 **작업이 통째로 사라진다**
+#     그래프    상태가 sqlite 체크포인트에 있다
+#               -> 새 프로세스가 이어받는다 (실측 확인)
+#
+#     그리고 **검증을 통과 못 하면 두 번째 물음이 아예 안 나옵니다.**
+#     지금은 버튼을 띄워 두고 서버가 막는데, 물음 자체를 안 내면
+#     실수로 누를 자리가 없어집니다.
+#
+#   ⚠️ 노드 하나도 LLM 을 안 부릅니다. 여기서 LangGraph 는 **상태 기계**입니다.
+
+_GRAPH_LOCK = threading.Lock()
+_GRAPH_RUNNING: dict = {"busy": False, "since": None, "answer": None}
+
+
+def _graph_app():
+    """그래프와 체크포인트를 연다. **부를 때마다 새로 연다** — sqlite 연결을
+    여러 스레드가 나눠 쓰면 잠금 문제가 생긴다."""
+    _agent_path()
+    import retrain_graph as rg                               # noqa: PLC0415
+    from langgraph.checkpoint.sqlite import SqliteSaver      # noqa: PLC0415
+    rg.CKPT.parent.mkdir(parents=True, exist_ok=True)
+    cm = SqliteSaver.from_conn_string(str(rg.CKPT))
+    saver = cm.__enter__()
+    return rg, cm, rg.make_graph(saver)
+
+
+def _graph_state(kind: str) -> dict:
+    rg, cm, app = _graph_app()
+    try:
+        cfg = rg.thread(kind)
+        st = app.get_state(cfg)
+        asking = None
+        for t in (st.tasks or ()):
+            for it in (t.interrupts or ()):
+                asking = it.value if hasattr(it, "value") else it
+        vals = {k: v for k, v in (st.values or {}).items()
+                if k not in ("judge_text", "build_tail")}
+        return {"next": list(st.next or ()), "values": vals, "asking": asking,
+                "judge_text": (st.values or {}).get("judge_text"),
+                "build_tail": (st.values or {}).get("build_tail")}
+    finally:
+        cm.__exit__(None, None, None)
+
+
+@app.get("/retrain/graph/status")
+def retrain_graph_status(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
+    """지금 어디 서 있나. **체크포인트를 읽는 것이라 서버가 죽어도 남는다.**"""
+    with _GRAPH_LOCK:
+        running = dict(_GRAPH_RUNNING)
+    return {"kind": kind, "running": running, **_graph_state(kind)}
+
+
+def _graph_run(kind: str, answer: str | None) -> None:
+    rg, cm, app = _graph_app()
+    try:
+        from langgraph.types import Command                  # noqa: PLC0415
+        cfg = rg.thread(kind)
+        if answer is None:
+            app.invoke({"kind": kind}, cfg)
+        else:
+            app.invoke(Command(resume=answer), cfg)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[retrain-graph] {type(e).__name__}: {e}")
+    finally:
+        cm.__exit__(None, None, None)
+        with _GRAPH_LOCK:
+            _GRAPH_RUNNING.update(busy=False, since=None, answer=None)
+
+
+@app.post("/retrain/graph/act")
+def retrain_graph_act(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$"),
+                      answer: str | None = Query(None)):
+    """그래프를 굴린다.
+
+    `answer` 없음   처음부터 (judge)
+    `build`        후보를 만든다 (몇 분)
+    `apply`        운영 모델을 바꾼다
+    그 밖          그만둔다
+
+    ★ 배경에서 돌린다 — build 가 2분 반 걸린다. 상태는 체크포인트에 남으므로
+      중간에 서버가 죽어도 다음에 이어받는다.
+    """
+    if answer is not None and answer not in ("build", "apply", "stop"):
+        raise HTTPException(400, "answer 는 build · apply · stop 중 하나입니다.")
+    with _GRAPH_LOCK:
+        if _GRAPH_RUNNING["busy"]:
+            raise HTTPException(409, "이미 돌고 있습니다. 끝난 뒤에 다시 눌러 주세요.")
+        _GRAPH_RUNNING.update(
+            busy=True, answer=answer,
+            since=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    threading.Thread(target=_graph_run, args=(kind, answer), daemon=True).start()
+    return {"started": True, "kind": kind, "answer": answer}
+
+
+@app.post("/retrain/graph/reset")
+def retrain_graph_reset(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
+    """작업을 처음으로 되돌린다. **모델은 안 건드린다** — 흐름만 지운다."""
+    _agent_path()
+    import retrain_graph as rg                               # noqa: PLC0415
+    import sqlite3                                           # noqa: PLC0415
+    tid = rg.thread(kind)["configurable"]["thread_id"]
+    if not rg.CKPT.exists():
+        return {"reset": tid, "note": "체크포인트가 없습니다."}
+    with sqlite3.connect(str(rg.CKPT)) as cn:
+        for t in ("checkpoints", "writes"):
+            try:
+                cn.execute(f"DELETE FROM {t} WHERE thread_id = ?", (tid,))
+            except sqlite3.OperationalError:
+                pass
+    return {"reset": tid}
