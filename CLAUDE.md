@@ -944,6 +944,10 @@ LLM예측시험_5회_20260902.md         ★★ 9년 배운 모델이 14일 요�
 
 ```bash
 pip install lightgbm pandas numpy
+
+# 재학습 흐름을 LangGraph 로 돌릴 때만 (agent/retrain_graph.py)
+#   ★ 상태 기계로 쓰는 것이고 LLM 은 안 부릅니다. 저쪽 팀과 같은 버전입니다
+pip install "langgraph>=1.2.11" langgraph-checkpoint-sqlite
 ```
 
 DBeaver 에서 `crop_price_train` → Export Data → CSV (UTF-8)
