@@ -117,6 +117,10 @@ class S(TypedDict, total=False):
     #   verify
     passed: bool
     verify_text: str
+    #   ★ 품목별 수치. **글과 따로 둡니다** — 사람이 «바꿀까요» 에
+    #     답하려면 문장이 아니라 숫자를 나란히 봐야 합니다.
+    #     화면이 표로 그립니다.
+    verify_items: list
     #   apply
     applied: str
     backup: str
@@ -193,6 +197,46 @@ def build(state: S) -> S:
     return {"build_ok": ok, "build_tail": tail[-3000:], "candidate": cand}
 
 
+def _items_from_findings(res: dict) -> list:
+    """옛 결과 파일에서 표를 되살린다.
+
+    ★ `items` 는 2026-09-09 에 생겼습니다. 그 전 파일에는 수치가 **글 안에만**
+      있습니다(`findings[].numbers`). 그걸 버리면 지난 판정을 표로 못 봅니다.
+
+    ★ **새 파일에는 이 길을 안 씁니다.** 글을 파싱해 숫자를 뽑는 것은
+      문장을 고칠 때마다 깨지는 방식이라, 되살리기 용도로만 둡니다.
+    """
+    def num(v: str) -> float | None:
+        try:
+            return float(str(v).replace("%", "").replace("+", "").strip())
+        except ValueError:
+            return None
+
+    rows = []
+    for f in res.get("findings", []):
+        title = str(f.get("title", ""))
+        if "—" not in title:
+            continue
+        item = title.split("—")[0].strip()
+        got = {k: v for k, v in (f.get("numbers") or [])}
+        if "현행 WMAPE" not in got and "필요" not in got:
+            continue          # 「견주는 창」 같은 머리말 줄
+        n = str(got.get("행수", "0")).replace(",", "").replace("행", "")
+        verdict = ("후보가 낫다" if "낫습니다" in title
+                   else "후보가 나쁘다" if "나쁩니다" in title
+                   else "표본 부족" if "표본" in title
+                   else "판정 불가")
+        rows.append({
+            "item": item, "n": int(num(n) or 0), "verdict": verdict,
+            "anchor": num(got.get("앵커 WMAPE")),
+            "cur": num(got.get("현행 WMAPE")),
+            "cand": num(got.get("후보 WMAPE")),
+            "diff": num(got.get("차이 (현행−후보)")),
+            "need": num(got.get("시드 편차×2")),
+        })
+    return rows
+
+
 def verify(state: S) -> S:
     """검증 결과를 읽는다. **판정은 retrain_build 가 이미 했다.**
 
@@ -200,17 +244,20 @@ def verify(state: S) -> S:
       갈릴 수 있고, 그때 어느 쪽이 맞는지 알 방법이 없다.
     """
     if not state.get("build_ok"):
-        return {"passed": False, "verify_text": "후보를 못 만들었습니다."}
+        return {"passed": False, "verify_items": [], "verify_text": "후보를 못 만들었습니다."}
     if not RESULT_JSON.exists():
-        return {"passed": False, "verify_text": "검증 결과 파일이 없습니다."}
+        return {"passed": False, "verify_items": [], "verify_text": "검증 결과 파일이 없습니다."}
     try:
         res = json.loads(RESULT_JSON.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        return {"passed": False, "verify_text": f"검증 결과를 못 읽었습니다: {e}"}
+        return {"passed": False, "verify_items": [], "verify_text": f"검증 결과를 못 읽었습니다: {e}"}
 
     lines = [f"[{f['level']}] {f['title']}" for f in res.get("findings", [])]
     return {"passed": bool(res.get("passed")),
             "candidate": res.get("candidate", state.get("candidate", "")),
+            #   ★ 숫자를 그대로 넘긴다. 여기서 다시 계산하지 않는다 —
+            #     판정은 retrain_build 가 이미 했고, 두 곳에서 재면 갈린다.
+            "verify_items": res.get("items") or _items_from_findings(res),
             "verify_text": f"판정 {res.get('verdict')}\n" + "\n".join(lines)}
 
 
@@ -229,6 +276,10 @@ def ask_apply(state: S) -> Command[Literal["apply", "__end__"]]:
         "ask": "운영 모델을 후보로 바꿀까요",
         "candidate": state.get("candidate"),
         "verify": state.get("verify_text"),
+        #   ★ 물음 **옆에** 숫자를 같이 싣습니다. 사람이 «바꿀까요» 에
+        #     답하려면 현행과 후보를 나란히 봐야 합니다. 글만 주면
+        #     «낫습니다» 를 믿고 누르는 것 말고 할 수 있는 게 없습니다.
+        "items": state.get("verify_items") or [],
         "hint": "apply 로 답하면 바꿉니다. 지금 것은 통째로 백업되고 되돌릴 수 있습니다. "
                 "모델 이름은 안 바뀝니다 — 매입 파트가 이름으로 찾습니다.",
     })

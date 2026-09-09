@@ -151,6 +151,30 @@ export interface RetrainJob {
 
 // ─────────────────────────────────────────── 재학습 (LangGraph)
 
+/**
+ * 재학습 검증에서 나온 **품목 한 줄**.
+ *
+ * ★ 값이 `null` 일 수 있습니다 — 표본이 100행에 못 미쳐 판정을 안 한
+ *   품목입니다. 0 으로 그리면 «오차가 0» 으로 읽힙니다.
+ */
+export interface VerifyItem {
+  item: string;
+  /** 견준 행수 */
+  n: number;
+  /** 후보가 낫다 · 후보가 나쁘다 · 판정 불가 · 표본 부족 */
+  verdict: string;
+  /** 어제값 그대로 썼을 때의 오차. **이걸 못 이기면 모델을 쓸 이유가 없다** */
+  anchor: number | null;
+  /** 지금 쓰는 모델 */
+  cur: number | null;
+  /** 새로 만든 후보 */
+  cand: number | null;
+  /** 현행 − 후보. 양수면 후보가 낫다 */
+  diff: number | null;
+  /** 시드 흔들림 × 2. **차이가 이걸 넘어야 판정한다** */
+  need: number | null;
+}
+
 export interface GraphAsk {
   ask: string;
   hint?: string;
@@ -158,6 +182,8 @@ export interface GraphAsk {
   candidates?: [string, string][];
   candidate?: string;
   verify?: string;
+  /** 물음 옆에 같이 오는 수치. 글만 보고 누르지 않게 한다 */
+  items?: VerifyItem[];
 }
 
 export interface GraphStatus {
@@ -171,4 +197,18 @@ export interface GraphStatus {
   running: { busy: boolean; since: string | null; answer: string | null };
   judge_text?: string | null;
   build_tail?: string | null;
+  /** 품목별 수치. 화면이 표로 그린다 */
+  verify_items?: VerifyItem[];
+  /**
+   * 마지막 검증 결과. **체크포인트와 별개다** — 「처음으로」 로 지워도 남는다.
+   * 화면은 이것을 «지난 검증» 이라고 **반드시 적어야** 한다.
+   */
+  last_verify?: {
+    at: string;
+    candidate: string;
+    passed: boolean;
+    verdict: string;
+    eval_from: string;
+    items: VerifyItem[];
+  } | null;
 }

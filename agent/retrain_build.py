@@ -205,8 +205,11 @@ def build(kind: str, csv: Path, cur_meta: dict, train_end: str, out: Path) -> No
 #   견주기
 # ─────────────────────────────────────────────────────────────────────
 def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
-          eval_from: str) -> bool:
-    """현행 vs 후보. 돌려주는 값 = 채택 권고 여부."""
+          eval_from: str, table: list | None = None) -> bool:
+    """현행 vs 후보. 돌려주는 값 = 채택 권고 여부.
+
+    `table` 을 주면 **품목별 수치를 거기 담습니다** — 화면이 표로 그립니다.
+    """
     cur_meta = json.loads((cur / "meta.json").read_text(encoding="utf-8"))
     target = cur_meta["target_col"]
     gate = int(cur_meta.get("gate_lt", 3))
@@ -216,6 +219,9 @@ def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
     m = (df["base_dt"] >= eval_from) & df["item_nm"].isin(items) \
         & (df["lead_biz_d"] >= gate) & df[target].notna()
     ev = df[m].copy()
+
+    if table is None:
+        table = []
 
     if ev.empty:
         rep.add(Finding(BAD, "견줄 행이 없습니다",
@@ -241,6 +247,12 @@ def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
     anchor = out["현행"]["anchor"]
 
     #   ── 품목별 ──────────────────────────────────────────────────
+    #
+    #   ★ 글(Finding)과 **따로** 표를 모읍니다. 지금까지는 사람이 읽는
+    #     문장만 남기고 수치를 버려서, 화면이 «판정 배추 — 후보가 낫습니다»
+    #     한 줄만 보였습니다. **바꿀지 말지는 숫자를 나란히 놓고 정하는
+    #     일**이라 표가 있어야 합니다.
+    rows = table
     verdicts = []
     for item in items:
         sel = (ev["item_nm"] == item).to_numpy()
@@ -248,6 +260,9 @@ def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
             rep.add(Finding(WARN, f"{item} — 표본이 적어 판정 안 합니다",
                             f"{int(sel.sum())}행뿐입니다.",
                             [("필요", "100행")]))
+            rows.append({"item": item, "n": int(sel.sum()), "verdict": "표본 부족",
+                         "anchor": None, "cur": None, "cand": None,
+                         "diff": None, "need": None})
             verdicts.append(None)
             continue
 
@@ -270,16 +285,24 @@ def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
                 ("시드 편차×2", f"{need:.4f}")]
 
         if diff > need:
+            verdict = "후보가 낫다"
             verdicts.append(True)
             rep.add(Finding(OK, f"{item} — 후보가 낫습니다", "편차×2 를 넘습니다.", nums))
         elif -diff > need:
+            verdict = "후보가 나쁘다"
             verdicts.append(False)
             rep.add(Finding(BAD, f"{item} — 후보가 **나쁩니다**", "편차×2 를 넘어 나쁩니다.", nums))
         else:
+            verdict = "판정 불가"
             verdicts.append(None)
             rep.add(Finding(WARN, f"{item} — 판정 불가",
                             "차이가 시드 흔들림 안입니다. **'같다' 가 아니라 '모른다' 입니다.**",
                             nums))
+
+        rows.append({"item": item, "n": int(sel.sum()), "verdict": verdict,
+                     "anchor": round(w_anc, 4), "cur": round(w_cur, 4),
+                     "cand": round(w_cand, 4), "diff": round(diff, 4),
+                     "need": round(need, 4)})
 
     #   ── 최종 ────────────────────────────────────────────────────
     better = sum(1 for v in verdicts if v is True)
@@ -364,7 +387,8 @@ def main() -> int:
         raise SystemExit(f"후보 번들이 없습니다: {cand}\n  --cand 로 지정하거나 --judge-only 를 빼세요.")
 
     rep = Report("재학습검증")
-    ok = judge(rep, a.kind, csv, cur, cand, a.eval_from)
+    table: list = []
+    ok = judge(rep, a.kind, csv, cur, cand, a.eval_from, table)
     print(rep.text())
     if a.save:
         print("기록:", rep.save())
@@ -377,6 +401,9 @@ def main() -> int:
             "passed": ok,
             "verdict": rep.worst,
             "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
+            #   ★ 화면이 표로 그리는 자리. 글(findings)과 따로 둡니다 —
+            #     문장을 파싱해 숫자를 뽑으면 문장을 고칠 때마다 화면이 깨집니다.
+            "items": table,
             "findings": [asdict(f) for f in rep.findings],
         }, ensure_ascii=False, indent=1), encoding="utf-8")
 

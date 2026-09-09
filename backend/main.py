@@ -760,13 +760,46 @@ def _graph_state(kind: str) -> dict:
         for t in (st.tasks or ()):
             for it in (t.interrupts or ()):
                 asking = it.value if hasattr(it, "value") else it
+        #   ★ 긴 글과 표는 `values` 에서 빼서 따로 보냅니다. 안 빼면 화면이
+        #     `String(값)` 으로 찍어 «[object Object]» 가 됩니다.
         vals = {k: v for k, v in (st.values or {}).items()
-                if k not in ("judge_text", "build_tail")}
+                if k not in ("judge_text", "build_tail", "verify_items")}
         return {"next": list(st.next or ()), "values": vals, "asking": asking,
                 "judge_text": (st.values or {}).get("judge_text"),
-                "build_tail": (st.values or {}).get("build_tail")}
+                "build_tail": (st.values or {}).get("build_tail"),
+                "verify_items": (st.values or {}).get("verify_items") or []}
     finally:
         cm.__exit__(None, None, None)
+
+
+def _last_verify(kind: str) -> dict | None:
+    """마지막 검증 결과. **체크포인트와 별개다.**
+
+    ★ 체크포인트를 «처음으로» 로 지우거나 아직 안 돌린 상태여도, 지난 판정은
+      볼 수 있어야 합니다. 「왜 안 바꿨나」를 되짚는 자리입니다.
+
+    ★ **지난 것이라고 화면에 반드시 적습니다.** 날짜 없이 숫자만 보이면
+      지금 판정으로 읽습니다.
+    """
+    import json as _json                                     # noqa: PLC0415
+
+    f = ROOT / "진행기록" / "agent_logs" / "_retrain_last.json"
+    if not f.exists():
+        return None
+    try:
+        res = _json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if res.get("kind") != kind:
+        return None
+    _sys.path.insert(0, str(ROOT / "agent"))
+    import retrain_graph as _rg                               # noqa: PLC0415
+    items = res.get("items") or _rg._items_from_findings(res)
+    if not items:
+        return None
+    return {"at": res.get("at"), "candidate": res.get("candidate"),
+            "passed": bool(res.get("passed")), "verdict": res.get("verdict"),
+            "eval_from": res.get("eval_from"), "items": items}
 
 
 @app.get("/retrain/graph/status")
@@ -774,7 +807,8 @@ def retrain_graph_status(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
     """지금 어디 서 있나. **체크포인트를 읽는 것이라 서버가 죽어도 남는다.**"""
     with _GRAPH_LOCK:
         running = dict(_GRAPH_RUNNING)
-    return {"kind": kind, "running": running, **_graph_state(kind)}
+    return {"kind": kind, "running": running, **_graph_state(kind),
+            "last_verify": _last_verify(kind)}
 
 
 def _graph_run(kind: str, answer: str | None) -> None:
