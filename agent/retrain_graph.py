@@ -122,11 +122,18 @@ class S(TypedDict, total=False):
     build_tail: str
     #   verify
     passed: bool
+    #   시험용으로 문턱을 낮출 때만 채운다 (안 주면 평소 값)
+    streak: int
+    gap_pp: float
     verify_text: str
     #   ★ 품목별 수치. **글과 따로 둡니다** — 사람이 «바꿀까요» 에
     #     답하려면 문장이 아니라 숫자를 나란히 봐야 합니다.
     #     화면이 표로 그립니다.
     verify_items: list
+    #   discard — 못 통과해서 지운 후보 이름
+    #   ★ 여기 안 적어 두면 LangGraph 가 값을 **조용히 버립니다.**
+    #     실제로 그래서 «지웠다» 가 «멈췄다» 로 보였습니다 (2026-09-09).
+    discarded: str
     #   apply
     applied: str
     backup: str
@@ -157,9 +164,15 @@ def judge(state: S) -> S:
     from core import Report                                  # noqa: PLC0415
 
     kind = state.get("kind", "auc")
+    #   ★ 문턱을 밖에서 낮출 수 있게 열어 둔다. **시험용이다.**
+    #     안 주면 평소 값(drift_agent 와 같은 규칙)을 쓴다.
+    #     이걸로는 후보를 «만들어 견주기» 까지만 간다 — 바꾸는 것은
+    #     사람이 화면에서 누를 때만 일어나므로 낮춰도 위험하지 않다.
+    streak = int(state.get("streak") or ra.STREAK)
+    gap_pp = float(state.get("gap_pp") if state.get("gap_pp") is not None else ra.GAP_PP)
     rep = Report("재학습판정")
     ra.check_stale(rep, [kind])
-    hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, ra.GAP_PP, ra.STREAK)
+    hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, gap_pp, streak)
     ra.verdict(rep, hits, [kind])
     rep.save()                                               # 화면이 읽는다
 

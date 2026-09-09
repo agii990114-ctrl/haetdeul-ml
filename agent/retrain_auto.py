@@ -54,7 +54,8 @@ LABEL = {"auc": "경락가", "whsl": "중도매가", "rtl": "소매가"}
 OUT = ROOT / "진행기록" / "agent_logs" / "_retrain_pending.json"
 
 
-def run_one(kind: str) -> dict:
+def run_one(kind: str, streak: int | None = None,
+            gap_pp: float | None = None) -> dict:
     """한 종류를 돌린다. 결과를 한 줄로 요약해 돌려준다."""
     import retrain_graph as rg                                 # noqa: PLC0415
     from langgraph.checkpoint.sqlite import SqliteSaver        # noqa: PLC0415
@@ -81,7 +82,12 @@ def run_one(kind: str) -> dict:
         else:
             #   ★ 새로 시작한다. 지난 판정이 남아 있으면 지우고 시작한다 —
             #     어제 것을 오늘 결과로 착각하면 안 된다.
-            graph.invoke({"kind": kind}, cfg)
+            seed: dict = {"kind": kind}
+            if streak is not None:
+                seed["streak"] = streak
+            if gap_pp is not None:
+                seed["gap_pp"] = gap_pp
+            graph.invoke(seed, cfg)
 
         st = graph.get_state(cfg)
         v = dict(st.values or {})
@@ -118,6 +124,13 @@ WORD = {
 def main() -> int:
     ap = argparse.ArgumentParser(description="재학습 자동 판정·후보 생성")
     ap.add_argument("--kinds", nargs="*", default=list(KINDS))
+    #   ★ 시험용. 평소에는 안 준다 — 안 주면 drift_agent 와 같은 규칙이다.
+    #     낮춰도 «만들어 견주기» 까지만 간다. 바꾸는 것은 사람이 화면에서
+    #     누를 때만 일어난다.
+    ap.add_argument("--streak", type=int, default=None,
+                    help="몇 주 연속 밀리면 후보로 볼까 (시험용 · 평소 3)")
+    ap.add_argument("--gap-pp", type=float, default=None,
+                    help="얼마나 밀려야 «졌다» 로 볼까 (시험용)")
     a = ap.parse_args()
 
     rows = []
@@ -127,7 +140,7 @@ def main() -> int:
             continue
         print(f"[{LABEL[kind]}] 도는 중 …", flush=True)
         try:
-            r = run_one(kind)
+            r = run_one(kind, a.streak, a.gap_pp)
         except Exception as error:                             # noqa: BLE001
             #   ★ 하나가 죽어도 나머지는 돈다.
             r = {"kind": kind, "state": "error", "sec": 0.0,
