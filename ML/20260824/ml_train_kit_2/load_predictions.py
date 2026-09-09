@@ -19,7 +19,7 @@
     · 역변환 누락 — pred 가 앵커의 0.2~5배 밖이면 중단.
       predict.py 도 검사하지만, 손으로 만든 CSV 가 들어올 수 있다
     · 미래 대상일이 과거보다 앞서는 행 (target_dt < base_dt)
-    · DB CHECK 와 같은 조건(가격 > 0, 리드타임 1~18, target_kind 3종)
+    · DB CHECK 와 같은 조건(가격 > 0, 리드타임 0~18, target_kind 3종)
     이런 것들은 DB 가 어차피 막지만, **어느 행이 왜 걸렸는지** 알려면
     여기서 먼저 걸러야 한다. 제약 위반 메시지만으로는 못 찾는다.
 """
@@ -91,8 +91,11 @@ def read(path):
         why = None
         if rec["target_kind"] not in KIND:
             why = "target_kind=%r (auc/whsl/rtl 만 허용)" % rec["target_kind"]
-        elif not (1 <= rec["lead_biz_d"] <= 18):
-            why = "lead_biz_d=%s (1~18)" % rec["lead_biz_d"]
+        #   ★ 0 부터 받는다 (2026-09-09). 리드 0 = **기준일 그날**이다.
+        #     가락 경매는 그날 밤에 열리고 배치는 아침에 도니, 당일 경매도
+        #     «아직 안 일어난 일» 이라 예측 대상이다. DB CHECK 도 0~18 이다.
+        elif not (0 <= rec["lead_biz_d"] <= 18):
+            why = "lead_biz_d=%s (0~18)" % rec["lead_biz_d"]
         elif not rec["anchor_prc"] or rec["anchor_prc"] <= 0:
             why = "anchor_prc=%s (0 초과여야 함)" % rec["anchor_prc"]
         elif not rec["pred_prc"] or rec["pred_prc"] <= 0:

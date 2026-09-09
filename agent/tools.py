@@ -91,9 +91,12 @@ def batch_recent(limit: int = 10) -> str:
     limit = max(1, min(int(limit), 30))
     with _db() as c:
         rows = c.execute(
-            "SELECT run_id, started_at::timestamp(0), status, n_ok, n_fail, note "
+            "SELECT run_id, (started_at AT TIME ZONE 'Asia/Seoul')::timestamp(0), "
+            "       status, n_ok, n_fail, note "
             "FROM batch_run ORDER BY run_id DESC LIMIT %s", (limit,)).fetchall()
-    out = ["run_id | 시작(UTC) | 상태 | 성공 | 실패 | 비고"]
+    #   ★ 한국 시각. UTC 로 주면 아침 9시 배치가 00:00 으로 보여, 읽는 쪽이
+    #     「자정에 돌았다」 로 잘못 읽는다.
+    out = ["run_id | 시작(KST) | 상태 | 성공 | 실패 | 비고"]
     for r in rows:
         out.append(f"{r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5] or ''}")
     return mask("\n".join(out))

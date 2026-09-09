@@ -27,8 +27,28 @@ from __future__ import annotations
 import datetime
 import io
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+#   ★ 자기 출력을 UTF-8 로 고정한다. **여기 한 곳에서 한다.**
+#
+#     윈도우 한국어 콘솔은 cp949 라 긴 붙임표 `—` 같은 글자를 못 찍는다.
+#     찍으려 들면 그 자리에서 UnicodeEncodeError 로 죽는다. 09-07 에 뉴스
+#     도우미가, 09-07~09 사흘 동안 배치 조사 도우미가 이걸로 죽었다.
+#
+#     `PYTHONIOENCODING=utf-8` 을 붙여 부르면 되지만, **화면에서 부르거나
+#     작업 스케줄러가 부르면 그게 안 넘어온다.** 부르는 쪽마다 챙기는 방식은
+#     이미 실패했다 — 네 파일에만 넣고 다섯 파일을 빠뜨렸다.
+#
+#     모든 도우미가 이 모듈을 첫 줄에서 들여온다. 그러니 여기서 한 번 하면
+#     새로 만드는 도우미도 저절로 안전하다. `errors="replace"` 라 정말 못 쓰는
+#     글자가 있어도 **그 글자만 물음표가 되고 프로그램은 안 죽는다.**
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass                     # 파이프로 묶여 reconfigure 가 없는 경우
 
 ROOT = Path(__file__).resolve().parent.parent
 

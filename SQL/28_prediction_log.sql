@@ -110,7 +110,9 @@ CREATE TABLE prediction_log (
     CONSTRAINT prediction_log_kind_ck
         CHECK (target_kind IN ('auc', 'whsl', 'rtl')),
     CONSTRAINT prediction_log_lead_ck
-        CHECK (lead_biz_d BETWEEN 1 AND 18),
+        --  ★ 0 = 기준일 그날 (v5.5 · 2026-09-08). 가락 경매는 그날 밤에
+        --    열리므로 기준일 당일도 예측 대상이다.
+        CHECK (lead_biz_d BETWEEN 0 AND 18),
     CONSTRAINT prediction_log_prc_ck
         CHECK (pred_prc > 0 AND anchor_prc > 0)
 );

@@ -21,6 +21,7 @@ import { ApiError, graphAct, graphReset, graphStatus } from "@/lib/api";
 import type { GraphStatus } from "@/lib/types";
 
 import { Verdict } from "./AgentPanel";
+import { VerifyTable } from "./VerifyTable";
 
 const KIND_LABEL: Record<string, string> = { auc: "경락가", whsl: "중도매가", rtl: "소매가" };
 
@@ -187,12 +188,56 @@ export function RetrainGraphPanel({ kind = "auc" }: { kind?: "auc" | "whsl" | "r
           {asking.hint && (
             <p className="m-0 mt-1.5 text-[12px] leading-relaxed text-muted">{asking.hint}</p>
           )}
+          {/*  ★ 표를 **글보다 먼저** 보인다. 「바꿀까요」 에 답하려면
+                  숫자를 나란히 봐야 한다. */}
+          {asking.items && asking.items.length > 0 && (
+            <div className="mt-3">
+              <VerifyTable items={asking.items} />
+            </div>
+          )}
           {asking.verify && (
-            <pre className="m-0 mt-2.5 max-h-52 overflow-auto rounded border border-line-soft bg-surface p-2.5 text-[11.5px] leading-relaxed">
-              {asking.verify}
-            </pre>
+            <details className="mt-2.5">
+              <summary className="cursor-pointer text-[11.5px] text-muted">
+                판정 문장 그대로 보기
+              </summary>
+              <pre className="m-0 mt-1.5 max-h-52 overflow-auto rounded border border-line-soft bg-surface p-2.5 text-[11.5px] leading-relaxed">
+                {asking.verify}
+              </pre>
+            </details>
           )}
         </div>
+      )}
+
+      {/*  묻는 중이 아니어도 마지막 검증 표는 남겨 둔다 — 끝난 뒤에
+             «왜 안 바꿨나» 를 되짚을 수 있어야 한다. */}
+      {!asking && st.verify_items && st.verify_items.length > 0 && (
+        <VerifyTable items={st.verify_items} />
+      )}
+
+      {/*  지금 상태에 표가 없을 때만 지난 것을 보인다.
+           ★ **언제 잰 것인지 반드시 적는다** — 날짜 없이 숫자만 보이면
+             지금 판정으로 읽는다. */}
+      {!asking && !(st.verify_items && st.verify_items.length) && st.last_verify && (
+        <section className="space-y-2">
+          <p className="m-0 flex flex-wrap items-baseline gap-x-2 text-[12px] text-muted">
+            <b className="text-ink">지난 검증</b>
+            <span className="tabular font-mono text-[11.5px]">{st.last_verify.at}</span>
+            <span className="text-[11.5px]">
+              후보 <span className="font-mono">{st.last_verify.candidate}</span> ·
+              {" "}견준 구간 {st.last_verify.eval_from} 부터
+            </span>
+            <span
+              className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                st.last_verify.passed
+                  ? "bg-accent-wash text-accent-ink"
+                  : "bg-warn-wash text-warn"
+              }`}
+            >
+              {st.last_verify.passed ? "통과" : "안 바꿨습니다"}
+            </span>
+          </p>
+          <VerifyTable items={st.last_verify.items} />
+        </section>
       )}
 
       {/* 그래프가 들고 있는 값 */}

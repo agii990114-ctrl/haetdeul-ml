@@ -176,7 +176,11 @@ def gather(run_id: int | None) -> tuple[Report, dict]:
     facts: dict = {}
     with db() as c:
         row = c.execute(
-            "SELECT run_id, started_at::timestamp(0), status, n_ok, n_fail, note "
+            #   ★ 한국 시각으로 적는다. DB 는 UTC 로 담고 있어 그대로 찍으면
+            #     아침 9시 배치가 **00:00 으로 보인다.** 화면 표는 보는 사람
+            #     시간대로 그리므로, 같은 화면에서 두 값이 어긋난다.
+            "SELECT run_id, (started_at AT TIME ZONE 'Asia/Seoul')::timestamp(0), "
+            "       status, n_ok, n_fail, note "
             "FROM batch_run " + ("WHERE run_id=%s " if run_id else "")
             + "ORDER BY run_id DESC LIMIT 1",
             (run_id,) if run_id else ()).fetchone()
@@ -477,6 +481,13 @@ def main() -> int:
     a = ap.parse_args()
 
     rep, facts = gather(a.run_id)
+
+    #   ★ **찍기보다 남기기가 먼저다.** 예전에는 print 가 먼저였는데,
+    #     찍다가 죽으면 `rep.save()` 까지 못 와서 **기록 파일이 아예 안
+    #     남았다.** 점검은 다 끝냈는데 결과가 사라지는 자리였다.
+    #     인코딩 문제는 core.py 에서 막았지만, 순서도 같이 바로잡는다 —
+    #     화면은 못 봐도 되지만 기록은 남아야 한다.
+    p = rep.save()
     print(rep.text())
 
     ai_text = None
@@ -496,7 +507,6 @@ def main() -> int:
         else:
             print("  (AI 를 쓸 수 없어 규칙 결과만 남깁니다)")
 
-    p = rep.save()
     if ai_text:
         with io.open(p, "a", encoding="utf-8") as f:
             f.write(chr(10) + "─" * 70 + chr(10) + "[AI 조사 결과]" + chr(10))

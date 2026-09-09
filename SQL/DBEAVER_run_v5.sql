@@ -538,7 +538,17 @@ WITH base AS (
 expanded AS (
     SELECT b.*, l.lead_biz_d, t.dt AS target_dt, t.prc AS target_whsl_prc
     FROM base b
-    CROSS JOIN generate_series(1,18) AS l(lead_biz_d)
+    --  ★ 0 부터 센다 (v5.5 · 2026-09-08). 리드 0 = **기준일 그날**이다.
+    --
+    --    가락 경매는 **그날 밤**에 열린다. 배치는 아침에 돈다. 그래서
+    --    기준일 당일 경매는 «아직 안 일어난 일» 이고 예측 대상이다.
+    --    여태 리드 1(다음 조사일)부터 냈는데, 그러면 매입이 오늘 밤
+    --    얼마에 살지를 우리한테서 못 받는다.
+    --
+    --  ★ 누수 없음 (실측 2026-09-08). 앵커 auc_prc_lag1 은 기준일
+    --    **직전** 조사일 값이다 — 8,948건 대조에서 기준일 당일값과
+    --    같은 것은 0.55%(우연 일치)뿐이고 평균 11.65% 차이가 난다.
+    CROSS JOIN generate_series(0,18) AS l(lead_biz_d)
     JOIN tmp_px t ON t.item_nm = b.item_nm AND t.bn = b.bn + l.lead_biz_d
     -- 상한을 하드코딩하지 않는다 (v5.3, 2026-08-25).
     --   전에는 '2025-12-31' 로 박혀 있었다. RAW 를 2026-08 까지 채우고 v5 를
@@ -1308,7 +1318,9 @@ expanded AS (
     FROM base b
     JOIN recent r ON r.item_nm = b.item_nm
                  AND b.bn > r.bn_max - (SELECT n_base FROM tmp_pi_cfg)
-    CROSS JOIN generate_series(1,18) AS l(lead_biz_d)
+    --  ★ 학습표와 같은 축을 쓴다. 여기만 1 부터 세면 오늘값 모델이
+    --    학습은 되는데 **운영에서 안 나간다.**
+    CROSS JOIN generate_series(0,18) AS l(lead_biz_d)
     JOIN ref_calendar c ON c.is_survey AND c.survey_seq = b.bn + l.lead_biz_d
     WHERE b.whsl_prc_lag1 IS NOT NULL
 )
@@ -1520,7 +1532,7 @@ SELECT 'target_dt <= base_dt'                    AS 검사항목, COUNT(*) AS �
   FROM crop_price_train WHERE target_dt <= base_dt
 UNION ALL
 SELECT 'lead_biz_d 범위 이탈', COUNT(*)
-  FROM crop_price_train WHERE lead_biz_d NOT BETWEEN 1 AND 18
+  FROM crop_price_train WHERE lead_biz_d NOT BETWEEN 0 AND 18
 UNION ALL
 SELECT '반입량 asof 가 기준일 이후', COUNT(*)
   FROM crop_price_train WHERE arr_qty_asof_date >= base_dt
