@@ -40,6 +40,33 @@ MARKET = "110001"          # 서울가락
 GRADE_TOP, GRADE_2ND = "11", "12"
 ITEMS = ("배추", "무", "양파")
 
+#   ★ 등급 순서 검사에 바닥 둘을 둔다 (2026-09-09).
+#
+#     09-09 에 배추가 «역전율 50% · 이상» 으로 울었는데, 파보니 **분모가
+#     2일**이었다. 그중 하루에 상등급 **50kg 한 건**(같은 날 특등급은
+#     518,140kg)이 특등급 평균보다 비쌌던 것이 전부다.
+#
+#     실측 (최근 180일 · 우리 규격) —
+#
+#         품목   두 등급 다 있는 날   상등급 하루 물량 중앙
+#         무           103일              65,480kg   (특의 16%)
+#         배추           2일                  50kg   (특의 0.02%)
+#         양파          23일                 345kg   (특의 0.07%)
+#
+#     **50kg 은 가격이 아니라 잡음이다.** 그래서 두 가지를 건다.
+MIN_SHARE = 0.01           # 상등급 물량이 특등급의 1% 미만인 날은 안 센다
+MIN_DAYS = 20              # 그러고도 20일이 안 모이면 비율을 내지 않는다
+#
+#     왜 1% 인가 — 특등급 하루 물량이 늘 10만kg 을 넘으므로 1% 는 대략
+#     1,000kg 이다. 실측으로 무는 103 -> 96일로 거의 안 줄고, 배추는
+#     **3년 통틀어 0일**, 양파는 180일에 2일만 남는다. 규격 사고(08-27)로
+#     걸러야 할 것을 못 거르지도 않는다 — 그때는 1kg 소포장 물량이
+#     10kg 그물망만큼 컸다.
+#
+#     왜 20일 인가 — 그보다 적으면 하루가 비율을 5%p 넘게 움직인다.
+#     판정 경계가 10%/30% 라서, 몇 건으로 «정상 <-> 이상» 을 넘나든다.
+#     오늘 자료로는 3~87 사이 어느 값을 골라도 결과가 같아 예민하지 않다.
+
 # 우리 타겟이 쓰는 규격. v5 의 tmp_auc 와 같아야 한다.
 SPEC = ("AND ((item_name='배추' AND package_name IN ('그물망','파렛트') AND unit_weight_kg=10) "
         " OR (item_name='무' AND package_name IN ('상자','파렛트') AND unit_weight_kg=20) "
@@ -47,33 +74,64 @@ SPEC = ("AND ((item_name='배추' AND package_name IN ('그물망','파렛트') 
 
 
 def check_grade_order(c, days: int) -> Finding:
-    """① 특등급이 상등급보다 싼 날이 있나."""
+    """① 특등급이 상등급보다 싼 날이 있나.
+
+    ★ **거래가 거의 없는 등급으로는 판정하지 않는다.** 위 MIN_SHARE ·
+      MIN_DAYS 를 보라. 지금 우리 규격에서 실제로 판정되는 것은 무 하나이고,
+      배추·양파는 «표본 부족» 으로 남는다. 그것이 사실이다 — 억지로 비율을
+      내면 한 건이 들어올 때마다 0% <-> 50% <-> 100% 로 튄다.
+    """
     rows = c.execute(f"""
         WITH d AS (
           SELECT auction_date dt, item_name it, grade_code g,
-                 SUM(trade_amount_krw)/SUM(trade_volume_kg) p
+                 SUM(trade_amount_krw)/SUM(trade_volume_kg) p,
+                 SUM(trade_volume_kg) v
           FROM auction_prices_daily
           WHERE wholesale_market_code=%s AND grade_code IN (%s,%s)
             AND trade_volume_kg>0 AND auction_date >= CURRENT_DATE - %s {SPEC}
-          GROUP BY 1,2,3)
-        SELECT a.it, COUNT(*) FILTER (WHERE a.p < b.p), COUNT(*)
-        FROM d a JOIN d b ON b.dt=a.dt AND b.it=a.it AND b.g=%s
-        WHERE a.g=%s GROUP BY 1 ORDER BY 1
-    """, (MARKET, GRADE_TOP, GRADE_2ND, days, GRADE_2ND, GRADE_TOP)).fetchall()
-    nums, worst = [], 0.0
-    for it, bad, tot in rows:
-        r = bad / tot if tot else 0.0
+          GROUP BY 1,2,3),
+        j AS (
+          SELECT a.it, a.p pa, b.p pb, b.v / a.v AS share
+          FROM d a JOIN d b ON b.dt=a.dt AND b.it=a.it AND b.g=%s
+          WHERE a.g=%s)
+        SELECT it,
+               COUNT(*)                                        AS raw,
+               COUNT(*) FILTER (WHERE share >= %s)             AS used,
+               COUNT(*) FILTER (WHERE share >= %s AND pa < pb) AS bad
+        FROM j GROUP BY 1 ORDER BY 1
+    """, (MARKET, GRADE_TOP, GRADE_2ND, days, GRADE_2ND, GRADE_TOP,
+          MIN_SHARE, MIN_SHARE)).fetchall()
+
+    nums, worst, judged = [], 0.0, 0
+    for it, raw, used, bad in rows:
+        if used < MIN_DAYS:
+            #   ★ «0%» 로 적지 않는다. 0% 는 «안 틀렸다» 로 읽히는데
+            #     사실은 «못 쟀다» 이다.
+            nums.append((f"{it} 판정 안 함",
+                         f"쓸 수 있는 날 {used}일 (최소 {MIN_DAYS}일) · "
+                         f"두 등급 다 있는 날은 {raw}일"))
+            continue
+        judged += 1
+        r = bad / used
         worst = max(worst, r)
-        nums.append((f"{it} 역전", f"{tot}일 중 {bad}일 ({r*100:.0f}%)"))
-    if not rows:
-        return Finding(WARN, "등급 순서 — 비교할 자료가 없음",
-                       "상등급 거래가 없어 판정하지 못했습니다.", nums)
+        nums.append((f"{it} 역전", f"{used}일 중 {bad}일 ({r*100:.0f}%)"
+                                   + (f" · {raw - used}일은 물량이 적어 뺌"
+                                      if raw > used else "")))
+
+    if judged == 0:
+        return Finding(WARN, "등급 순서 — 판정하지 못했습니다",
+                       "상등급 거래가 너무 적어 셋 다 못 쟀습니다." + chr(10) +
+                       "**이상이 없다는 뜻이 아닙니다** — 재려면 자료가 모자랍니다.",
+                       nums,
+                       "규격 조건을 넓힐지는 사람이 정하세요. 넓히면 "
+                       "다른 상품이 섞입니다 (배추 상등급은 상자 8kg 이 본류).")
+
     lv = BAD if worst > 0.30 else (WARN if worst > 0.10 else OK)
     return Finding(
-        lv, f"등급 순서 (특 >= 상)  최대 역전율 {worst*100:.0f}%",
+        lv, f"등급 순서 (특 >= 상)  최대 역전율 {worst*100:.0f}% · 판정 {judged}품목",
         #   정상이면 아무 말도 안 한다. 이상할 때만 왜인지 말한다.
         "" if lv == OK else
-        ("특등급이 상등급보다 싼 날이 너무 많습니다. 진짜 시장에서는 드뭅니다.\n"
+        ("특등급이 상등급보다 싼 날이 너무 많습니다. 진짜 시장에서는 드뭅니다." + chr(10) +
          "서로 다른 포장 규격이 한 평균에 섞이면 이렇게 됩니다."),
         nums,
         "" if lv == OK else "규격 조건이 타겟과 어긋났는지 확인하세요.")
