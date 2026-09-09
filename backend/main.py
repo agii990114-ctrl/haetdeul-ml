@@ -802,6 +802,31 @@ def _last_verify(kind: str) -> dict | None:
             "eval_from": res.get("eval_from"), "items": items}
 
 
+@app.get("/retrain/pending")
+def retrain_pending():
+    """**사람이 눌러야 할 결정이 있나.** 화면이 탭을 띄울지 정하는 데 쓴다.
+
+    ★ 왜 따로 두나 — 화면이 세 종류를 각각 물으면 세 번 부른다. 탭 하나
+      띄우자고 그럴 이유가 없다. 여기서 한 번에 답한다.
+
+    ★ **후보가 현행보다 나을 때만** 여기 뜬다. 못하면 `retrain_auto` 가
+      후보를 지우고 아무것도 안 남긴다 — 사람이 볼 것이 없다.
+
+    ★ 판정은 `agent/retrain_auto.py` 가 배치 뒤에 해 둔 것이다. 이 창구는
+      그 결과를 읽어 옮길 뿐 아무것도 계산하지 않는다.
+    """
+    import json as _json                                     # noqa: PLC0415
+    f = ROOT / "진행기록" / "agent_logs" / "_retrain_pending.json"
+    if not f.exists():
+        #   ★ «아직 한 번도 안 돌았다» 와 «돌았는데 없다» 는 다르다.
+        return {"at": None, "pending": [], "ran": False}
+    try:
+        d = _json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"at": None, "pending": [], "ran": False, "error": str(e)}
+    return {"at": d.get("at"), "pending": d.get("pending", []), "ran": True}
+
+
 @app.get("/retrain/graph/status")
 def retrain_graph_status(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
     """지금 어디 서 있나. **체크포인트를 읽는 것이라 서버가 죽어도 남는다.**"""
