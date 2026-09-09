@@ -65,7 +65,11 @@ def run_one(kind: str, streak: int | None = None,
     #     다시 뜨면 메모리 판은 흔적도 안 남습니다.
     with SqliteSaver.from_conn_string(str(rg.CKPT)) as sv:
         graph = rg.make_graph(sv)
-        cfg = {"configurable": {"thread_id": kind}}
+        #   ★ **이름표는 `rg.thread()` 가 정하는 것을 그대로 씁니다.**
+        #     여기서 따로 짓지 않습니다 — 전에 `kind` 를 그냥 썼다가
+        #     서버는 `retrain-auc` 를, 이쪽은 `auc` 를 열어 **같은 파일을
+        #     보면서 서로 못 봤습니다.** 화면 버튼이 아무 일도 안 했습니다.
+        cfg = rg.thread(kind)
 
         #   ★ 예전 상태 파일이 「후보를 만들까요」 에서 멈춰 있을 수 있다.
         #     그 물음은 이제 안 쓰므로 «만들자» 로 대신 답해 이어 준다.

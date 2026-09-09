@@ -813,7 +813,15 @@ def retrain_pending():
       후보를 지우고 아무것도 안 남긴다 — 사람이 볼 것이 없다.
 
     ★ 판정은 `agent/retrain_auto.py` 가 배치 뒤에 해 둔 것이다. 이 창구는
-      그 결과를 읽어 옮길 뿐 아무것도 계산하지 않는다.
+      그 결과를 읽어 옮길 뿐 아무것도 **다시 판정하지 않는다.**
+
+    ★ **다만 «아직 기다리는 중인가» 는 그래프에 되묻는다** (2026-09-09 고침).
+      파일은 배치가 쓴 그때의 사진이다. 사람이 「모델 업데이트」 를 누르면
+      그래프는 바뀌는데 **파일은 그대로 남는다.** 그래서 눌러도 새로고침하면
+      계속 «바꿔야 합니다» 가 떴다. 실제로 그렇게 나왔다.
+
+      파일은 «무엇을 견줬나»(비교표)를 들고 있고,
+      그래프는 «아직 답을 기다리나»를 안다. 둘을 겹쳐야 맞다.
     """
     import json as _json                                     # noqa: PLC0415
     f = ROOT / "진행기록" / "agent_logs" / "_retrain_pending.json"
@@ -824,7 +832,22 @@ def retrain_pending():
         d = _json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return {"at": None, "pending": [], "ran": False, "error": str(e)}
-    return {"at": d.get("at"), "pending": d.get("pending", []), "ran": True}
+
+    live = []
+    for row in d.get("pending", []):
+        kind = row.get("kind")
+        if kind not in ("auc", "whsl", "rtl"):
+            continue
+        try:
+            asking = (_graph_state(kind).get("asking") or {}).get("ask", "")
+        except Exception:                                    # noqa: BLE001
+            #   ★ 그래프를 못 열면 **파일을 믿는다.** 물어볼 것이 있는데
+            #     안 보여주는 쪽이, 없는 것을 보여주는 쪽보다 나쁘다.
+            live.append(row)
+            continue
+        if "바꿀까요" in asking:
+            live.append(row)
+    return {"at": d.get("at"), "pending": live, "ran": True}
 
 
 @app.get("/retrain/graph/status")
