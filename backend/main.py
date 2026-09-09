@@ -297,16 +297,52 @@ def quality_table():
 _QCACHE: dict = {}
 
 
+@app.get("/quality/saved")
+def quality_saved(name: str = Query("데이터품질")):
+    """**가장 최근에 저장된** 점검 결과를 그대로 넘긴다. 다시 안 돌린다.
+
+    ★ 왜 필요한가 — 이 검사는 매일 아침 자동으로 돈다. 결과가 있는데
+      화면이 사람에게 «누르세요» 라고 하면, 안 누른 날은 못 본 것이 된다.
+
+    ★ **`/quality` 와 같은 모양으로 낸다.** 그래야 화면이 «방금 돌린 것» 과
+      «아침에 저장된 것» 을 **같은 그림**으로 그린다. 모양이 다르면 같은
+      내용인데 두 가지로 보여 사람이 헷갈린다.
+
+    ★ 없으면 `found: false` 다. **«없다» 와 «정상이다» 는 다르다** —
+      아침 점검이 실패한 날에 «정상» 으로 보이면 안 된다.
+    """
+    import json as _json                                     # noqa: PLC0415
+    d = ROOT / "진행기록" / "agent_logs"
+    hits = sorted(d.glob(f"*_{name}.json"), reverse=True)     # 이름에 날짜가 앞선다
+    if not hits:
+        return {"found": False}
+    try:
+        got = _json.loads(hits[0].read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"found": False, "error": str(e)}
+    got["found"] = True
+    got["file"] = hits[0].name
+    return got
+
+
 @app.get("/quality")
-def quality(days: int = Query(180, ge=30, le=1500)):
+def quality(days: int = Query(180, ge=30, le=1500),
+            fresh: bool = Query(False, description="기억해 둔 것을 무시하고 지금 다시 잰다")):
     """데이터 품질 agent 를 돌려 결과를 넘긴다.
 
     DB 를 훑으므로 10초쯤 걸린다. 같은 조건이면 10분간 기억해 둔다 —
     화면을 새로 그릴 때마다 다시 돌 이유가 없다.
+
+    ★ **사람이 「지금 다시 검사」 를 누를 때는 `fresh=1` 로 부른다.**
+      기억해 둔 것을 돌려주면 눌러도 시각이 안 바뀌어 «안 먹혔다» 로
+      보인다. 실제로 그렇게 보였다 (2026-09-09).
+
+      **누르는 것은 «지금 이 순간을 재 달라» 는 뜻**이다. 기억해 둔 답을
+      주는 것은 그 뜻을 어기는 것이다.
     """
     now = datetime.datetime.now()
     hit = _QCACHE.get(days)
-    if hit and (now - hit[0]).total_seconds() < 600:
+    if hit and not fresh and (now - hit[0]).total_seconds() < 600:
         return hit[1]
 
     import sys
@@ -328,6 +364,21 @@ def quality(days: int = Query(180, ge=30, le=1500)):
     out = {"name": rep.name, "verdict": rep.worst, "days": days,
            "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
            "findings": [asdict(f) for f in rep.findings]}
+    #   ★ **다시 잰 것도 남긴다** (2026-09-09).
+    #
+    #     전에는 안 남겼다. 그래서 화면에서 「지금 다시 검사」 를 눌러
+    #     새 결과를 봐도, 새로고침하면 아침 것으로 되돌아갔다.
+    #     **누른 사람 눈에는 «안 먹힌 것» 으로 보인다.**
+    #
+    #     남기면 다음에 열 때도 그 결과가 나오고, 지난 기록에도 «이 시각에
+    #     누가 다시 확인했다» 가 남는다.
+    #
+    #     ★ 저장이 실패해도 결과는 그대로 돌려준다. 남기다 죽어서 방금 잰
+    #       것을 잃으면 본말전도다.
+    try:
+        rep.save()
+    except Exception as error:                               # noqa: BLE001
+        print(f"[quality] 결과를 못 남겼습니다: {type(error).__name__}: {error}")
     _QCACHE[days] = (now, out)
     return out
 
@@ -403,10 +454,16 @@ def agent_history(limit: int = Query(120, ge=1, le=600)):
     """
     if not AGENT_DIR.exists():
         return {"dates": []}
+    #   ★ **거른 다음에 자른다.** 전에는 자르고 나서 걸렀다.
+    #
+    #     2026-09-09 에 보고서를 `.json` 으로도 남기게 하면서 폴더의 파일이
+    #     두 배가 됐다. `.json` 은 여기서 걸러지지만 **자르는 자리는 이미
+    #     차지한 뒤**라, 화면에 보이는 기록이 조용히 반토막 났다.
+    #     새 보고서를 남겨도 목록이 안 늘어 «저장이 안 됐나» 로 보였다.
+    files = [p for p in sorted(AGENT_DIR.iterdir(), reverse=True)
+             if p.is_file() and _NAME_RE.match(p.name)][:limit]
     out: dict = {}
-    for p in sorted(AGENT_DIR.iterdir(), reverse=True)[:limit]:
-        if not p.is_file() or not _NAME_RE.match(p.name):
-            continue
+    for p in files:
         stem = p.stem
         date = stem[:10]
         rest = stem[11:]
