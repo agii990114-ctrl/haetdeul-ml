@@ -124,18 +124,57 @@ def numbers(text: str) -> list[str]:
     return [w.rstrip(".-") for w in re.findall(r"\d[\d.\-%]*", t)]
 
 
+def parts(tokens) -> set[str]:
+    """붙은 숫자를 낱개로 쪼갠다. `4-8` -> {4, 8} · `1-5` -> {1, 5}."""
+    out: set[str] = set()
+    for t in tokens:
+        for piece in re.split(r"[-%]", t):
+            piece = piece.strip(".")
+            if piece:
+                out.add(piece)
+                #   앞의 0 을 뗀 것도 같이 둔다 — `09` 와 `9` 는 같은 수다
+                if piece.isdigit():
+                    out.add(str(int(piece)))
+    return out
+
+
 def check(src: str, out: str) -> list[str]:
     """원문에 있는데 번역에서 사라진 숫자.
 
     ★ 날짜를 풀어 쓴 것(`08-27` -> `8월 27일`)은 잃은 게 아니다.
       그것까지 경보로 내면 매일 울어서 아무도 안 본다.
+
+    ★★ **범위를 풀어 쓴 것도 잃은 게 아니다** (2026-09-10 고침).
+
+          영어  rainy stations went from 33 down to 4-8
+          한국어 비가 온 관측소가 33개에서 4개~8개로 줄었다
+
+      `4-8` 을 한 덩어리로 찾으면 없다. 그런데 **4 도 8 도 다 있다.**
+      2026-09-10 보고서가 이걸로 `4-8 · 1-5 · 6-11` 셋을 잃었다고 했고,
+      셋 다 멀쩡했다. 화면 맨 위에 **「이 숫자는 믿지 마세요」** 가 붙었다.
+
+      맞는 보고서에 경고가 붙으면 다음부터 경고를 안 읽는다. 그게 제일
+      나쁘다 — `verify_after_rebuild.sql` 의 「BAD 를 아껴 쓰라」 와 같다.
+
+      그래서 **덩어리로 못 찾으면 낱개로 한 번 더 본다.** 낱개가 다 있으면
+      잃은 것이 아니다.
     """
     got = set(numbers(out))
     #   「8월 27일」 처럼 풀어 쓴 것도 숫자로 잡아 둔다
     for m, d in re.findall(r"(\d{1,2})월\s*(\d{1,2})일", out):
         got.add(f"{int(m):02d}-{int(d):02d}")
         got.add(m); got.add(d)
-    return [n for n in dict.fromkeys(numbers(src)) if n not in got]
+    got_parts = parts(got)
+
+    lost = []
+    for n in dict.fromkeys(numbers(src)):
+        if n in got:
+            continue
+        #   낱개가 **전부** 살아 있으면 표현만 바뀐 것이다
+        if parts([n]) <= got_parts:
+            continue
+        lost.append(n)
+    return lost
 
 
 def ask(client, chunk: str) -> str:

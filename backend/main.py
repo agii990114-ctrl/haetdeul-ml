@@ -22,7 +22,19 @@ mainproject 와 같은 방식입니다 — 화면(Next.js) + 백엔드(파이썬
 ## 띄우는 법
 
     pip install fastapi uvicorn "psycopg[binary]"
-    python -m uvicorn backend.main:app --reload --port 8000
+    ops\serve.bat                    <- 주소·포트는 .env 에 있습니다
+
+## ★ 주소를 코드에 박지 않습니다 (2026-09-10)
+
+`127.0.0.1` 은 **그 프로그램이 도는 컴퓨터 자신**을 가리킵니다. 그래서
+`127.0.0.1` 에 묶어 두면 **다른 컴퓨터에서는 아예 붙을 수가 없습니다** —
+주소를 바르게 적어도 안 됩니다. 문 자체가 안 열려 있기 때문입니다.
+
+    ML_CONSOLE_HOST   어느 문을 여나   0.0.0.0 이면 랜에서도 붙는다
+    ML_CONSOLE_PORT   몇 번 문인가     8102
+
+건너편(mainproject) 은 `ML_CONSOLE_ORIGIN` 으로 이 주소를 찾습니다.
+**양쪽 다 `.env` 에 있습니다. 코드에는 기본값만 둡니다.**
 """
 from __future__ import annotations
 
@@ -42,12 +54,13 @@ app = FastAPI(title="햇들농산 ML 콘솔 API", version="0.1.0")
 
 #   개발 중에는 화면이 3000 포트에서 뜬다. 와일드카드(*)를 쓰지 않는 이유는
 #   나중에 인증이 붙었을 때 아무 페이지나 우리 API 를 부르게 되기 때문이다.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
+#
+#   ★ 다른 컴퓨터에서 열면 브라우저가 보는 주소가 `192.168.0.x:3000` 이라
+#     여기 없으면 막힙니다. `.env` 의 `ML_CONSOLE_CORS` 에 쉼표로 더하세요.
+#     (mainproject 를 거쳐 오는 요청은 서버끼리라 CORS 와 무관합니다.)
+#
+#   실제 등록은 `_env()` 를 만든 뒤 아래에서 합니다 — 여기서는 `.env` 를
+#   아직 읽을 수 없습니다.
 
 #   ★ 화면은 **운영 기록만** 봅니다 (2026-09-01 수정).
 #
@@ -89,6 +102,25 @@ def _env() -> dict:
                 k, v = line.split("=", 1)
                 out[k.strip()] = v.strip().strip("'").strip('"')
     return out
+
+
+#   ★ CORS 를 여기서 답니다 — `_env()` 가 있어야 `.env` 를 읽습니다.
+#     미들웨어는 서버가 뜨기 전에만 달면 되므로 자리는 상관없습니다.
+_CORS = [
+    o.strip()
+    for o in (os.environ.get("ML_CONSOLE_CORS") or _env().get("ML_CONSOLE_CORS")
+              or "http://localhost:3000,http://127.0.0.1:3000,"
+                 "http://localhost:3100,http://127.0.0.1:3100").split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS,
+    #   ★ POST 도 엽니다. 「모델 업데이트」·「다시 돌리기」가 POST 입니다 —
+    #     GET 만 열어 두면 브라우저가 프리플라이트에서 막습니다.
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 def db(service: bool = False):
@@ -467,6 +499,21 @@ def agent_history(limit: int = Query(120, ge=1, le=600)):
         stem = p.stem
         date = stem[:10]
         rest = stem[11:]
+        #   ★ **영어 초안과 한국어 본문을 가른다** (2026-09-10 고침).
+        #
+        #     Claude 는 영어로 쓰고 flash-lite 가 한국어로 옮깁니다. 그래서
+        #     하루에 `.md` 가 **둘** 남습니다.
+        #
+        #         2026-09-10_claude_check_en.md   영어 초안 (원본)
+        #         2026-09-10_claude_check.md      한국어 (사람이 읽는 것)
+        #
+        #     둘 다 `is_claude` 였고, 이름을 역순으로 정렬하면 `_en` 이
+        #     `.` 보다 뒤라 **영어가 먼저 나옵니다.** 화면은 첫 번째를 집으므로
+        #     **번역을 해 놓고도 영어가 떴습니다.**
+        #
+        #     초안을 목록에서 지우지는 않습니다 — 번역이 이상할 때 원문을
+        #     대 볼 수 있어야 합니다. **맨 위에 펼칠 것만 가릅니다.**
+        draft = p.suffix == ".md" and stem.endswith("_en")
         if p.suffix == ".md":
             kind, time_s = rest or "claude_check", None
         else:
@@ -480,7 +527,8 @@ def agent_history(limit: int = Query(120, ge=1, le=600)):
             "file": p.name, "kind": kind,
             "time": f"{time_s[:2]}:{time_s[2:4]}:{time_s[4:6]}" if time_s else None,
             "verdict": _verdict_of(head),
-            "is_claude": p.suffix == ".md",
+            "is_claude": p.suffix == ".md" and not draft,
+            "is_draft": draft,
             "bytes": p.stat().st_size,
         })
     return {"dates": [{"date": d, "reports": sorted(
@@ -974,3 +1022,96 @@ def retrain_graph_reset(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
             except sqlite3.OperationalError:
                 pass
     return {"reset": tid}
+
+
+#  ══════════════════════════════════════════════════════════════════
+#  다시 돌리기 — 아침 자동 작업 · 오늘 AI 점검
+#
+#  ★ **왜 필요한가.** 둘 다 아침에 한 번 돕니다. 실패하면 **다음 날 아침까지
+#    빈 채로 남습니다.** 2026-09-10 에 실제로 그랬습니다 — 수집 검사가 헛경보로
+#    배치를 세워, 매입 파트 전달표에 그날 것이 없었습니다. 고친 뒤 사람이
+#    터미널에서 손으로 돌려야 했습니다. 그 한 번을 화면에서 하게 합니다.
+#
+#  ★ **한 번에 하나만 돕니다.** 배치는 학습표를 `TRUNCATE` 하고 다시 채웁니다.
+#    두 개가 겹치면 한쪽이 비운 표를 다른 쪽이 읽습니다. 그래서 **어느 하나가
+#    돌고 있으면 둘 다 막습니다** (`409`).
+#
+#  ★ **되돌릴 수 있는 일만 여기에 둡니다.** 배치를 다시 돌리는 것은 같은
+#    기준일을 다시 쓰는 것이라 `UPSERT` 로 덮입니다 — 없던 날이 생기지 않고,
+#    있던 날이 사라지지 않습니다. 모델을 바꾸거나 표를 지우는 일은 여기 없습니다.
+#
+#  ★ **화면은 기다리지 않습니다.** 누르면 바로 돌아오고, 진행은 따로 묻습니다.
+#    배치는 10~15분 걸립니다. HTTP 로 붙들고 있으면 프록시가 먼저 끊습니다.
+#  ══════════════════════════════════════════════════════════════════
+
+#: 돌릴 수 있는 것. **여기 없는 이름은 400 입니다.**
+#: `bat` 를 쓰는 이유는 스케줄러가 쓰는 것과 **같은 것을 돌리기 위해서**입니다 —
+#: 손으로 다시 짜면 둘이 갈립니다 (로그 위치 · UTF-8 · 종료코드).
+_OPS: dict[str, dict] = {
+    "batch": {"bat": ROOT / "ops" / "batch.bat", "label": "자동 작업", "minutes": 15},
+    "claude": {"bat": ROOT / "ops" / "claude_check.bat", "label": "AI 점검", "minutes": 5},
+}
+
+_OPS_JOB: dict = {"what": None, "state": "idle", "started": None,
+                  "ended": None, "code": None, "log": []}
+_OPS_LOCK = threading.Lock()
+
+
+def _ops_run(what: str) -> None:
+    """배경에서 돌린다. 화면은 `/ops/job` 으로 진행을 묻는다."""
+    bat = _OPS[what]["bat"]
+    #   ★ 하위 프로세스에 UTF-8 을 물려준다. 윈도우 기본이 cp949 라
+    #     로그에 '—' 하나만 있어도 UnicodeEncodeError 로 죽는다 —
+    #     재학습 버튼에서 이미 한 번 당했다 (2026-09-07).
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    try:
+        pr = subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(ROOT),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8", errors="replace", env=env)
+        for line in pr.stdout:                               # type: ignore[union-attr]
+            with _OPS_LOCK:
+                _OPS_JOB["log"].append(line.rstrip())
+                del _OPS_JOB["log"][:-400]                   # 뒤 400줄만 둔다
+        pr.wait()
+        with _OPS_LOCK:
+            _OPS_JOB["code"] = pr.returncode
+            _OPS_JOB["state"] = "done" if pr.returncode == 0 else "failed"
+    except Exception as e:                                   # noqa: BLE001
+        with _OPS_LOCK:
+            _OPS_JOB["log"].append(f"{type(e).__name__}: {e}")
+            _OPS_JOB["state"] = "failed"
+    finally:
+        with _OPS_LOCK:
+            _OPS_JOB["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@app.post("/ops/rerun")
+def ops_rerun(what: str = Query(..., pattern="^(batch|claude)$")):
+    """아침에 실패한 것을 **지금 한 번 더** 돌린다.
+
+    ★ 스케줄러가 돌리는 것과 **똑같은 것**을 돌립니다. 같은 `bat` 이라
+      로그 자리도 같고 종료코드도 같습니다.
+    """
+    with _OPS_LOCK:
+        if _OPS_JOB["state"] == "running":
+            now = _OPS[_OPS_JOB["what"]]["label"] if _OPS_JOB["what"] else "다른 작업"
+            raise HTTPException(409, f"{now}이(가) 돌고 있습니다. 끝난 뒤에 눌러 주세요.")
+        _OPS_JOB.update(what=what, state="running", code=None, ended=None, log=[],
+                        started=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    threading.Thread(target=_ops_run, args=(what,), daemon=True).start()
+    return {"started": True, "what": what,
+            "label": _OPS[what]["label"], "minutes": _OPS[what]["minutes"]}
+
+
+@app.get("/ops/job")
+def ops_job(tail: int = Query(40, ge=1, le=400)):
+    """지금 돌고 있나 · 끝났으면 어떻게 끝났나.
+
+    ★ **마지막 줄만 보여도 충분합니다.** 사람이 알고 싶은 것은 「도는 중인가」
+      와 「잘 끝났나」 둘입니다. 자세한 것은 배치 기록 표에 남습니다.
+    """
+    with _OPS_LOCK:
+        job = {k: v for k, v in _OPS_JOB.items() if k != "log"}
+        log = list(_OPS_JOB["log"][-tail:])
+    label = _OPS[job["what"]]["label"] if job["what"] else None
+    return {**job, "label": label, "log": log}
