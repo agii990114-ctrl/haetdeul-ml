@@ -1,95 +1,80 @@
-# Daily Log — 2026-09-04 (Fri)
+# 2026-09-04 (Fri) — Chwijung Daily Log
 
-**Project:** Haetdeul Nongsan · ML team
+> Paste each block into the matching form field. Counts are checked against the form limits.
 
----
+| Field | Value |
+|---|---|
+| category | `final` |
+| status | `completed` |
 
-## Summary
+## title (40/40)
+```text
+Stale base dates and unread checks fixed
+```
 
-**"It exists, and nobody looks at it."** Three defects found the same day had the same
-shape: the value was not the problem — the thing that would have said it was wrong sat
-where nobody looked. Separately, a model-structure change that passed every fold
-reversed on live data, and the list of "combinations we cannot trust" was rewritten.
+## feature_name (97/100)
+```text
+Base-date alignment, batch-read validation, series-level diagnosis (M-13) and per-crop model test
+```
 
-## 1. ★★ Base dates had been one day stale for eight months
+## problems (164/200)
+```text
+Base dates had lagged one day for eight months (contract met on 26 of 248 days), and the batch discarded its own validation results, hiding a week of 100% mismatch.
+```
 
-A row with base date D uses only data up to D−1. But the rebuild created base date D
-only **after D's own survey value arrived** — so every morning's forecast was built on
-yesterday's base date, with a day-old anchor and one day less of horizon.
+## solution (188/200)
+```text
+Built base dates from the survey calendar without altering training rows, moved validation into a file the batch reads and stops on, and re-measured all combinations after a 2026 backfill.
+```
 
-The purchase team's contract expects `daily[0] = as_of + 1`. It passed on **26 of 248
-days.**
+## result (179/200)
+```text
+Contract alignment restored; validation now halts the batch on BAD; wholesale identified as the only weak series (unchanged 58–68% of days); per-crop split rejected live (+0.08%).
+```
 
-Fixed by inserting empty base-date rows from the day after the last observation up to
-today, inside the inference-input step only. **The training table did not change by a
-single row.**
+## content (4252/6000)
+````markdown
+The defects resolved on this day shared one pattern: the data or the check existed, but its output reached no one. Base dates had been one day behind for eight months, and the batch had been discarding its own validation results. The list of unreliable model combinations was also rebuilt from a larger sample, and a model-structure change that passed every fold was rejected on live data.
 
-## 2. ★★ The batch was throwing away its own validation results
+## Base-Date Lag: Mechanism and Correction
 
-The rebuild SQL contains validation queries. The batch ran the file as one block:
+A row with base date D uses only data up to D−1. The inference-input step, however, created base date D only after D's own survey value had arrived. Each morning's forecast was therefore built on the previous day's base date, with a one-day-old anchor and one day less of forecast horizon. The purchase team's contract requires the first forecast day to equal the reference date plus one; it was satisfied on only 26 of 248 days.
+
+The correction inserts empty base-date rows from the day after the last observation up to the current date, within the inference-input step only. The training table was not changed by a single row.
+
+## Discarded Validation Results
+
+The rebuild SQL contains validation queries, but the batch executed the file as a single block and advanced past every result set without reading it:
 
 ```python
 cur.execute(sql)
 while cur.nextset():
-    pass          # ← every validation result disappears here
+    pass   # every validation result is discarded here
 ```
 
-They were only visible when a person ran the SQL by hand. **Check [14] had reported
-100% mismatch for a week** (08-27 → 09-04): when ten derived columns were added, the
-inference-input step was not updated, and seven columns were entirely NULL.
+The results were visible only when a person ran the SQL manually. Validation check [14] had reported mismatches on 1,404 of 1,404 comparison rows for a week, because ten derived columns had been added without updating the inference-input step, leaving seven columns entirely empty. Forecast values were not affected, because those columns were excluded from model inputs.
 
-Fixed: the batch now runs a separate verification file whose results it reads.
-`BAD` stops the batch; `WARN` only notifies. **Use `BAD` sparingly — a daily alarm is
-an ignored alarm.**
+Validation was moved to a dedicated file whose results the batch reads. Findings are classified as BAD, which stops the batch, or WARN, which only notifies. BAD is reserved for conditions under which the output must not be delivered, because an alarm that fires daily is ignored. Detection of days on which the batch did not run, and checks on successful days, were also added.
 
-Also added: detection of days the batch never ran, and checks on successful days too.
+## Series-Level Diagnosis (M-13)
 
-## 3. [M-13] The "unusable combinations" list was wrong
+The backlog listed three of nine combinations as unusable, but the error history covered only 27 base dates concentrated in January and late August. Measured on that sample, six of nine appeared to lose to the anchor; split by period, six changed sign. After backfilling 137 base dates of 2026, 164 base dates and 21,734 rows were scored. Auction and retail were positive with consistent quarterly signs in five of six cells (+10.1% to +16.9%), while all three wholesale cells were at anchor level.
 
-The backlog said three of nine combinations were unusable. Error history covered only
-January and late August — 27 base dates. Measured on those, six of nine "lost to the
-anchor"; split by period, six flipped sign.
+The cause was structural. The share of days on which the price equals the previous day's price is 0.6–1.3% for auction, 18–26% for retail and 58–68% for wholesale. With wholesale unchanged six days in ten, the anchor is nearly perfect and leaves little to improve. Combinations blocked by the quality table were also found to be unmeasurable, since their forecasts are replaced by the anchor before logging; re-measured in shadow mode, wholesale onion was the only wholesale cell positive in all three quarters (+7.6%, +10.7%, +17.9%).
 
-Backfilled 137 base dates of 2026 (2024–2025 excluded as sealed). With 164 base dates
-and 21,734 scored rows:
+## Per-Crop Model Split
 
-- Auction and retail: **five of six cells positive with consistent quarterly signs**
-  (+10.1% to +16.9%)
-- Wholesale: all three at anchor level
+A dedicated onion auction model passed three folds and the 2σ threshold (+7.19%, +5.48%, +19.20%). Rebuilt under production conditions with seven years of training and scored on 164 live 2026 base dates, it produced +2.67% for onion, −5.70% for cabbage, +2.64% for radish and +0.08% pooled, and was rejected. Folds train on four to six years; the longer the training, the more a pooled model benefits. Structural changes now require a live 2026 check in addition to folds.
 
-**Cause found:** wholesale price is **identical to the previous day on 58–68% of days**.
-The anchor is nearly perfect; there is almost nothing to beat. It is a series problem,
-not a crop problem.
+## Other Work
 
-Also: a blocked combination is replaced by the anchor before logging, so it can never
-be evaluated. Re-measured with the block off in shadow mode, wholesale onion was the
-**only** wholesale cell positive in all three quarters.
+Drift detection was built around losses to the anchor measured in percentage points; credentials were consolidated into a single environment file; English versions of the development record and troubleshooting casebook were published; and eight replies were sent to the purchase team, including the addition of a band-method field.
 
-## 4. Per-crop model split — passed every fold, reversed live
+## Lessons Learned
 
-Splitting onion auction into its own model passed three folds and the 2σ rule
-(+7.19 / +5.48 / +19.20%). Rebuilt under production conditions (7-year training) and
-applied to 164 live 2026 base dates:
+A safeguard that nobody reads provides no protection. Each of the three defects found this day was discovered by a person by chance; the corrections moved the signal to a place where the system acts on it.
+````
 
-```
-Onion +2.67% · Cabbage −5.70% · Radish +2.64% · Pooled +0.08%
-```
+---
 
-No net gain — rejected. **Folds train on 4–6 years; production on 7. The longer the
-training, the more pooling pays.** New procedure: structural changes must also be
-checked against 2026 live.
-
-## 5. Other
-
-- Drift detection [I-04]: judged by losing to the anchor, in percentage points
-- Credentials consolidated into one root `.env` [S-01]
-- English documents: development progress record and troubleshooting casebook
-- Eight replies to the purchase team, including adding `band_method` to the handoff
-  table and delivering the D+14 width distribution
-
-## Sources
-
-- `진행기록/있는데_아무도_안본다_20260904.md`
-- `진행기록/M13_못쓰는조합_재정의_20260904.md`
-- `진행기록/daily_log_20260902-04_EN.md`
-- git history of 2026-09-04 (#17–#25)
+*Sources (not for pasting): `진행기록/있는데_아무도_안본다_20260904.md` · `진행기록/M13_못쓰는조합_재정의_20260904.md` · `진행기록/daily_log_20260902-04_EN.md` · git history of 2026-09-04*
