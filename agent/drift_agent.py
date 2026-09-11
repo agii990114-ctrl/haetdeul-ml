@@ -105,7 +105,15 @@ WITH scored AS (
            COUNT(*)                          AS n
       FROM prediction_log
      WHERE actual_prc IS NOT NULL
-       AND lead_biz_d >= 3            -- LT1~2 는 게이트라 앵커와 같다
+       -- ★ 2026-09-11 — 리드 0 부터 보고, 게이트로 앵커가 그대로 나간 행은 뺀다.
+       --   전에는 lead_biz_d >= 3 이었다 («LT1~2 는 게이트라 앵커와 같다»).
+       --   게이트를 09-09 에 꺼서 0~2 도 모델이 만든다 — 매입이 제일 먼저 쓰는
+       --   오늘 밤·내일 경매 자리인데 감시에서 빠져 있었다.
+       --   게이트 행(pred = anchor)은 리드와 무관하게 모델 값이 아니다
+       --   (리드 3+ 에도 2,584행). 섞으면 모델·앵커 차이가 묽어진다.
+       --   되감아 재니 최근 주 판정은 아홉 조합 모두 그대로, 나쁜 주 수는 ±1.
+       AND lead_biz_d >= 0
+       AND gated IS NOT TRUE
        AND model_ver = ANY(%s)
      GROUP BY 1, 2, 3
 )
