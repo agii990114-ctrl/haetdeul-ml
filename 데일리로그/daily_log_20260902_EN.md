@@ -32,7 +32,7 @@ Handled in-progress runs separately with a 45-minute escalation, ran an unattend
 False alarm eliminated; 587 tuning trials produced no adoptable change; the LLM averaged 0.1774 vs 0.1809 for LightGBM but varied 3–7% between runs and was not adopted.
 ```
 
-## content (3549/6000)
+## content (4135/6000)
 ````markdown
 Three questions were settled on this day. A false failure report from the batch monitor was traced to a timing race. An unattended hyperparameter search tested whether the production configuration was leaving accuracy on the table. A large language model was asked to forecast prices directly, to establish whether a fundamentally different approach could compete. The code base was also moved into its own version-controlled repository.
 
@@ -44,9 +44,9 @@ The monitor was changed to report "still running, N minutes elapsed" and to esca
 
 ## Automated Search Design
 
-An autonomous research loop — write a configuration, run it, evaluate it, and keep or roll back — was adapted to the project's evaluation rules. Each trial varied LightGBM settings such as tree count, learning rate, leaf count, minimum leaf size, feature and row sampling, and L2 regularisation. A trial was accepted only if both validation folds improved in sign and the combined gain exceeded twice the seed deviation.
+An autonomous research loop — write a configuration, run it, evaluate it, and keep or roll back — was adapted to the project's evaluation rules. Features were locked and only seven LightGBM settings could change (tree count, learning rate, leaf count, minimum leaf size, feature and row sampling, L2 regularisation), because a score-only loop would eventually remove the lead-time feature. A trial was accepted only if both search folds improved in sign, the combined gain exceeded twice the seed deviation, and no crop became worse. A third fold (validate 2021) was withheld from the search and used once at the end.
 
-None of the 587 trials passed. Most failed because the two folds disagreed in sign, and the remainder produced combined changes below the noise threshold. The result confirmed that tuning was not the constraint on accuracy.
+Two of the 587 trials passed the search rule, and neither was adopted. The retail candidate (more trees and leaves, smaller minimum leaf) was worse on the withheld fold (−0.0024), showing that it had fitted the search folds. The auction candidate (fewer trees, stronger regularisation) improved on the withheld fold (+0.0059), but a 20-seed re-check left folds A and B below their thresholds and no crop improved consistently across all three folds; the gain came almost entirely from onion on the withheld fold. Wholesale produced no candidate in 200 trials. Tuning was therefore not the constraint on accuracy.
 
 ## LLM Direct-Forecast Trial
 
