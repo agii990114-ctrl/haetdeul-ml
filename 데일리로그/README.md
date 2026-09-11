@@ -44,15 +44,19 @@ by request.
 
 ## Records gaps
 
-08-12 to 08-17 has no per-day records; the 08-18 entry covers that week. No records
-exist for 08-19, 08-20, 08-22 or 08-23, so no files were created for them.
+08-12 to 08-17 has no per-day records; the 08-18 entry covers that week. 08-19, 08-20
+and 08-22 were reconstructed from dated training kits, SQL headers and result files
+(listed under *Sources* in each file). No work is recorded for 08-23, so no file exists for it.
 
 ---
 
 | Date | Day | title |
 |---|---|---|
 | [08-18](daily_log_20260818_EN.md) | Tue | First model failed to beat the baseline |
+| [08-19](daily_log_20260819_EN.md) | Wed | Learning and lead-time curves measured |
+| [08-20](daily_log_20260820_EN.md) | Thu | Three-target kit; arrivals back to 2015 |
 | [08-21](daily_log_20260821_EN.md) | Fri | Three-target model and pooled-WMAPE fix |
+| [08-22](daily_log_20260822_EN.md) | Sat | Economic variables removed by ablation |
 | [08-24](daily_log_20260824_EN.md) | Mon | Evaluation protocol and two-fold rule |
 | [08-25](daily_log_20260825_EN.md) | Tue | End-to-end batch pipeline went live |
 | [08-26](daily_log_20260826_EN.md) | Wed | Two-stage forecast rejected before build |
