@@ -54,6 +54,26 @@ LABEL = {"auc": "경락가", "whsl": "중도매가", "rtl": "소매가"}
 OUT = ROOT / "진행기록" / "agent_logs" / "_retrain_pending.json"
 
 
+def _route(ask: str) -> str:
+    """멈춰 있는 물음을 보고 할 일을 정한다. **교체 물음을 먼저 본다.**
+
+    ★ 2026-09-11 고침. 전에는 `"후보" in ask` 를 먼저 봤는데, 교체 물음
+      «운영 모델을 **후보**로 바꿀까요» 에도 «후보» 가 들어 있다. 그래서
+      사람 답을 기다리던 것에 배치가 «build» 로 대신 답했고, 교체 단계는
+      그걸 «apply 가 아니다 → 안 바꾼다» 로 받았다. **버튼이 다음 배치까지만
+      살았다.** 09-11 소매가 후보가 14:24 다시 돌리기에서 이렇게 사라졌다.
+
+        keep   사람이 «모델 업데이트» 를 누르길 기다리는 중 — 건드리지 않는다
+        build  옛 물음 «후보를 만들까요» — 이제 안 묻는 것이라 «만들자» 로 잇는다
+        fresh  멈춘 물음이 없다 — 처음부터 판정한다
+    """
+    if "바꿀까요" in ask:
+        return "keep"
+    if "후보를 만들까요" in ask:
+        return "build"
+    return "fresh"
+
+
 def run_one(kind: str, streak: int | None = None,
             gap_pp: float | None = None) -> dict:
     """한 종류를 돌린다. 결과를 한 줄로 요약해 돌려준다."""
@@ -78,11 +98,21 @@ def run_one(kind: str, streak: int | None = None,
         if st.tasks and getattr(st.tasks[0], "interrupts", None):
             ask = str(st.tasks[0].interrupts[0].value.get("ask", ""))
 
-        if "후보" in ask:
-            graph.invoke(rg.Command(resume="build"), cfg)
-        elif "바꿀까요" in ask:
+        route = _route(ask)
+        if route == "keep":
             #   이미 사람 답을 기다리는 중이면 건드리지 않는다.
-            return {"kind": kind, "state": "waiting", "sec": 0.0}
+            #
+            #   ★ 그리고 **«pending» 으로 돌려준다** (2026-09-11 고침).
+            #     전에는 «waiting» 이라 아래 main() 이 쓰는 파일의 pending
+            #     목록에서 빠졌고, 화면 창구(`/retrain/pending`)는 그 목록만
+            #     보므로 **버튼이 사라졌다.** 비교표는 그래프가 들고 있다.
+            v0 = dict(st.values or {})
+            return {"kind": kind, "state": "pending", "sec": 0.0, "kept": True,
+                    "candidate": v0.get("candidate", ""),
+                    "items": v0.get("verify_items") or [],
+                    "verify": v0.get("verify_text", "")}
+        if route == "build":
+            graph.invoke(rg.Command(resume="build"), cfg)
         else:
             #   ★ 새로 시작한다. 지난 판정이 남아 있으면 지우고 시작한다 —
             #     어제 것을 오늘 결과로 착각하면 안 된다.
@@ -132,7 +162,7 @@ def main() -> int:
     #     낮춰도 «만들어 견주기» 까지만 간다. 바꾸는 것은 사람이 화면에서
     #     누를 때만 일어난다.
     ap.add_argument("--streak", type=int, default=None,
-                    help="몇 주 연속 밀리면 후보로 볼까 (시험용 · 평소 3)")
+                    help="몇 주 연속 밀리면 후보로 볼까 (시험용 · 평소 1)")
     ap.add_argument("--gap-pp", type=float, default=None,
                     help="얼마나 밀려야 «졌다» 로 볼까 (시험용)")
     a = ap.parse_args()
