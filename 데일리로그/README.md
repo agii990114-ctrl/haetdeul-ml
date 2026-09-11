@@ -1,6 +1,6 @@
 # Daily Logs — Haetdeul Nongsan · ML team (Chwijung format)
 
-One English file per working day, 2026-08-18 to 2026-09-10, laid out to match the
+One English file per working day, 2026-08-18 to 2026-09-11, laid out to match the
 Chwijung daily-log form so each field can be pasted directly.
 
 ## How to use a file
@@ -75,6 +75,7 @@ and 08-22 were reconstructed from dated training kits, SQL headers and result fi
 | [09-08](daily_log_20260908_EN.md) | Tue | Retraining rebuilt as a state machine |
 | [09-09](daily_log_20260909_EN.md) | Wed | ML console, lead 0 and auto-retraining |
 | [09-10](daily_log_20260910_EN.md) | Thu | False alarm fixed; rerun buttons added |
+| [09-11](daily_log_20260911_EN.md) | Fri | Retrain approval bug and base date fixed |
 
 ---
 
