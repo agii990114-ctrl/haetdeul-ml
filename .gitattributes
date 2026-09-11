@@ -1,0 +1,6 @@
+# 윈도우 배치 파일은 CRLF 라야 한다.
+#   LF 로 받으면 cmd 가 줄을 붙여 읽어 chcp·set 이 통째로 명령어가 된다.
+#   ops/serve.bat 을 LF 로 만들었다가 서버가 안 떴다 (2026-09-10).
+#   core.autocrlf 는 사람마다 다르므로 저장소에서 못 박는다.
+*.bat text eol=crlf
+*.cmd text eol=crlf

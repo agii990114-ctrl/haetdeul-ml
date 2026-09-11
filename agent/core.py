@@ -133,10 +133,36 @@ class Report:
         return nl.join(out)
 
     def save(self, subdir: str = "agent_logs") -> Path:
+        """보고서를 남긴다. **글과 구조를 나란히 남긴다.**
+
+        ★ `.txt` 는 사람이 읽는 것이다. 수치가 세로로 줄 맞춰져 있다.
+        ★ `.json` 은 화면이 읽는 것이다. 판정 배지와 근거 수치를 표로
+          그리려면 글이 아니라 구조가 필요하다.
+
+        왜 둘 다인가 — 전에는 `.txt` 만 남겼다. 그래서 화면이 저장된
+        보고서를 **글자 덩어리로만** 보일 수 있었고, 방금 돌린 것과
+        모양이 달랐다. 같은 내용인데 두 가지로 보이면 사람이 헷갈린다.
+        """
+        from dataclasses import asdict                       # noqa: PLC0415
+        import json as _json                                 # noqa: PLC0415
+
         d = ROOT / "진행기록" / subdir
         d.mkdir(parents=True, exist_ok=True)
-        p = d / f"{self.started.strftime('%Y-%m-%d_%H%M%S')}_{self.name}.txt"
+        stem = f"{self.started.strftime('%Y-%m-%d_%H%M%S')}_{self.name}"
+        p = d / f"{stem}.txt"
         io.open(p, "w", encoding="utf-8").write(self.text())
+        #   ★ 구조 저장이 실패해도 `.txt` 는 이미 남았다. 여기서 죽어서
+        #     보고서를 통째로 잃으면 본말전도다.
+        try:
+            io.open(d / f"{stem}.json", "w", encoding="utf-8").write(
+                _json.dumps({
+                    "name": self.name,
+                    "verdict": self.worst,
+                    "at": self.started.strftime("%Y-%m-%d %H:%M:%S"),
+                    "findings": [asdict(f) for f in self.findings],
+                }, ensure_ascii=False, indent=1))
+        except Exception:                                    # noqa: BLE001
+            pass
         return p
 
 
