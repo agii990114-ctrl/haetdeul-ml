@@ -345,7 +345,11 @@ def quality_saved(name: str = Query("데이터품질")):
     """
     import json as _json                                     # noqa: PLC0415
     d = ROOT / "진행기록" / "agent_logs"
-    hits = sorted(d.glob(f"*_{name}.json"), reverse=True)     # 이름에 날짜가 앞선다
+    #   ★ 가격 종류 접미가 붙은 파일도 잡는다 (2026-09-16).
+    #     `2026-09-16_090908_재학습판정_whsl.json` 처럼 뒤에 종류가 붙는다.
+    #     `*_{name}.json` 만 보면 그런 파일은 **없는 것이 된다.**
+    hits = sorted(set(d.glob(f"*_{name}.json")) | set(d.glob(f"*_{name}_*.json")),
+                  reverse=True)                               # 이름에 날짜가 앞선다
     if not hits:
         return {"found": False}
     try:
@@ -519,12 +523,26 @@ def agent_history(limit: int = Query(120, ge=1, le=600)):
         else:
             time_s = rest[:6] if rest[:6].isdigit() else None
             kind = rest[7:] if time_s else rest
+        #   ★ **가격 종류 접미를 떼어 낸다** (2026-09-16).
+        #
+        #     `2026-09-16_090908_재학습판정_whsl.txt` 를 그대로 보이면 화면에
+        #     «재학습판정_whsl» 이 뜬다. 새 도우미가 하나 더 생긴 것처럼
+        #     보인다. **도우미 이름은 «재학습판정» 하나고, 종류는 따로다.**
+        #
+        #     `kind` 라는 칸 이름은 원래 «도우미 이름» 을 담던 자리다
+        #     (화면이 이미 이 이름으로 읽는다). 뜻이 헷갈리므로 `name` 을
+        #     같은 값으로 하나 더 내고, 가격 종류는 `price_kind` 로 낸다.
+        price_kind = None
+        for _k in ("auc", "whsl", "rtl"):
+            if kind.endswith(f"_{_k}"):
+                kind, price_kind = kind[: -len(_k) - 1], _k
+                break
         try:
             head = io.open(p, encoding="utf-8", errors="replace").read(2000)
         except OSError:
             continue
         out.setdefault(date, []).append({
-            "file": p.name, "kind": kind,
+            "file": p.name, "kind": kind, "name": kind, "price_kind": price_kind,
             "time": f"{time_s[:2]}:{time_s[2:4]}:{time_s[4:6]}" if time_s else None,
             "verdict": _verdict_of(head),
             "is_claude": p.suffix == ".md" and not draft,
@@ -651,7 +669,10 @@ def retrain_status(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$")):
     import retrain_agent as ra                               # noqa: PLC0415
     from core import Report                                  # noqa: PLC0415
 
-    rep = Report("재학습판정")
+    #   ★ 종류를 박아 둔다. 여기서는 저장하지 않지만(화면이 즉석에서 보는
+    #     것뿐), 나중에 누가 `.save()` 를 붙여도 파일 이름·DB 열쇠가
+    #     배치와 같아지도록 처음부터 맞춰 둔다.
+    rep = Report("재학습판정", kind=kind)
     ra.check_stale(rep, [kind])
     hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, ra.GAP_PP, ra.STREAK)
     ra.verdict(rep, hits, [kind])

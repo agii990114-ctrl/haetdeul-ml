@@ -97,7 +97,7 @@ def db(service: bool = False):
 
 
 def to_db(name: str, verdict: str | None, ran_at, payload, body: str,
-          source_file: str = "") -> bool:
+          source_file: str = "", kind: str | None = None) -> bool:
     """보고서 한 벌을 `agent_report` 에 남긴다. **실패해도 조용히 넘어간다.**
 
     ★ **여기서 절대 예외를 올리지 않는다.** 이 함수는 배치 한복판에서 불린다.
@@ -108,19 +108,37 @@ def to_db(name: str, verdict: str | None, ran_at, payload, body: str,
       같은 값이다. DB 시계가 UTC 라(9절) 시간대 있는 칸에 넣으면 9시간
       밀린다. 표의 `ran_at` 을 시간대 없는 칸으로 둔 이유다.
 
-    같은 (이름 · 시각)이 이미 있으면 덮지 않고 넘어간다 — 과거 파일을
-    다시 밀어 넣어도 두 벌이 되지 않는다.
+    같은 (이름 · 시각 · 가격 종류)가 이미 있으면 덮지 않고 넘어간다 — 과거
+    파일을 다시 밀어 넣어도 두 벌이 되지 않는다.
+
+    ★ **열쇠에 가격 종류가 들어간다** (2026-09-16 고침). 전에는 (이름 · 시각)
+      뿐이었다. 그런데 재학습판정은 **가격 종류마다 한 건씩** 나오고, 종류
+      하나가 0초 만에 끝나면 **다음 것과 같은 초에** 저장된다.
+      2026-09-16 09:09:08 에 whsl 과 rtl 이 그렇게 겹쳐, 뒤엣것이
+      `ON CONFLICT DO NOTHING` 에 걸려 **조용히 버려졌다.**
+      09-11 은 1초 차이라 운으로 둘 다 남았다.
+
+      `kind` 가 없는 보고서(수집검사 · 데이터품질 …)는 `COALESCE(kind,'')`
+      로 빈 문자열이 되어 예전과 똑같이 (이름 · 시각)으로만 갈린다.
     """
     try:
         import json as _json                                 # noqa: PLC0415
+        #   ★ **초 아래를 자른다** (2026-09-16 고침). 파일 이름에는 초까지만
+        #     박히는데(`%H%M%S`) 여기에는 `datetime.now()` 의 마이크로초가
+        #     그대로 들어가고 있었다. 그래서 **같은 보고서가 두 행**이 됐다 —
+        #     저장할 때 `15:12:32.843535`, 파일에서 밀어넣을 때 `15:12:32`.
+        #     실측으로 4행이 그렇게 겹쳐 있었다 (전부 2026-09-16).
+        #     두 경로가 **같은 열쇠**를 내야 한다.
+        if isinstance(ran_at, datetime.datetime):
+            ran_at = ran_at.replace(microsecond=0)
         with db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO agent_report"
-                    " (name, verdict, ran_at, payload, body, source_file)"
-                    " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
-                    " ON CONFLICT (name, ran_at) DO NOTHING",
-                    (name, verdict, ran_at,
+                    " (name, kind, verdict, ran_at, payload, body, source_file)"
+                    " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)"
+                    " ON CONFLICT (name, ran_at, (COALESCE(kind, ''))) DO NOTHING",
+                    (name, kind or None, verdict, ran_at,
                      _json.dumps(payload, ensure_ascii=False) if payload is not None else None,
                      body, source_file or None))
             conn.commit()
@@ -316,7 +334,18 @@ class Report:
 
         d = ROOT / "진행기록" / subdir
         d.mkdir(parents=True, exist_ok=True)
-        stem = f"{self.started.strftime('%Y-%m-%d_%H%M%S')}_{self.name}"
+        #   ★ **파일 이름에 가격 종류를 붙인다** (2026-09-16 고침).
+        #
+        #     전에는 `날짜_시각_이름` 뿐이었다. 재학습판정은 가격 종류마다
+        #     한 건씩 나오는데, 한 종류가 **0초 만에** 끝나면 다음 것과 같은
+        #     초에 저장된다. 그러면 이름이 통째로 같아 **뒤엣것이 앞엣것을
+        #     덮었다.** 2026-09-16 09:09:08 에 whsl 이 rtl 에 먹혔다.
+        #
+        #     종류가 없는 보고서(수집검사 · 데이터품질 …)는 **이름 그대로**다.
+        #     그쪽은 하루 한 건이라 겹칠 일이 없고, 이름을 바꾸면 화면·DB 의
+        #     기존 기록과 갈린다.
+        tail = f"_{self.kind}" if self.kind else ""
+        stem = f"{self.started.strftime('%Y-%m-%d_%H%M%S')}_{self.name}{tail}"
         p = d / f"{stem}.txt"
         body = self.text()
         io.open(p, "w", encoding="utf-8").write(body)
@@ -336,7 +365,8 @@ class Report:
                 _json.dumps(payload, ensure_ascii=False, indent=1))
         except Exception:                                    # noqa: BLE001
             pass
-        to_db(self.name, self.worst, self.started, payload, body, p.name)
+        to_db(self.name, self.worst, self.started, payload, body, p.name,
+              kind=self.kind)
         return p
 
 

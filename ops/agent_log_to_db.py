@@ -19,8 +19,14 @@
 
 ★ **파일이 원본이고 DB 는 사본이다.** 파일을 고치거나 지우지 않는다.
 
-★ **두 번 넣어도 두 벌이 되지 않는다.** (이름 · 시각)이 같으면 건너뛴다.
-  그래서 몇 번을 돌려도 안전하다.
+★ **두 번 넣어도 두 벌이 되지 않는다.** (이름 · 시각 · 가격 종류)가 같으면
+  건너뛴다. 그래서 몇 번을 돌려도 안전하다.
+
+  ★ 열쇠에 **가격 종류**가 들어간다 (2026-09-16). 재학습 보고서는 종류마다
+    한 건씩 나오고, 한 종류가 0초 만에 끝나면 **같은 초에** 저장된다.
+    실제로 09-16 09:09:08 에 whsl 과 rtl 이 겹쳐 뒤엣것이 버려졌다.
+    그래서 파일 이름의 `_whsl` 접미를 떼어 종류로 넘긴다 —
+    `agent/core.py` 의 저장과 **같은 열쇠**를 내야 한다.
 
 ★ **시각은 한국 시간 그대로 넣는다.** 파일 이름에 박힌 시각과 같은 값이다.
   DB 시계가 UTC 라 시간대 있는 칸에 넣으면 9시간 밀린다 (`CLAUDE.md` 9절).
@@ -52,7 +58,17 @@ for _s in (sys.stdout, sys.stderr):
 LOGS = ROOT / "진행기록" / "agent_logs"
 
 #: 도우미 보고서 파일 이름 — `2026-09-15_092316_데이터품질.txt`
-_REPORT = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{6})_(.+)$")
+#:
+#: ★ **가격 종류 접미를 떼어 낸다** (2026-09-16). 재학습 보고서는
+#:   `2026-09-16_090908_재학습판정_whsl.txt` 처럼 뒤에 종류가 붙는다.
+#:   떼지 않으면 도우미 이름이 «재학습판정_whsl» 이 되어, 저장할 때
+#:   들어간 행(«재학습판정» + kind whsl)과 **열쇠가 달라져 두 벌이 된다.**
+#:   `agent/core.py` 의 저장과 이 밀어넣기가 **같은 열쇠를 내야 한다.**
+#:
+#:   종류는 셋뿐이라 통째로 못박는다. 이름 끝이 우연히 `_auc` 인 도우미가
+#:   생기면 그때 이 목록을 보고 판단한다 — 지금은 없다.
+_REPORT = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})_(\d{6})_(.+?)(?:_(auc|whsl|rtl))?$")
 #: AI 점검 보고서 — `2026-09-15_claude_check.md` · `..._claude_check_en.md`
 _CHECK = re.compile(r"^(\d{4}-\d{2}-\d{2})_(claude_check(?:_en)?)$")
 
@@ -67,7 +83,7 @@ def _one(path: Path) -> tuple[str, str] | None:
 
     m = _REPORT.match(stem)
     if m and path.suffix == ".txt":
-        day, hms, name = m.groups()
+        day, hms, name, kind = m.groups()
         ran_at = datetime.datetime.strptime(f"{day}_{hms}", "%Y-%m-%d_%H%M%S")
         payload, verdict = None, None
         side = path.with_suffix(".json")
@@ -77,7 +93,17 @@ def _one(path: Path) -> tuple[str, str] | None:
                 verdict = payload.get("verdict")
             except Exception:                                  # noqa: BLE001
                 payload = None                                 # 글은 그대로 넣는다
-        ok = to_db(name, verdict, ran_at, payload, _read(path), path.name)
+        #   ★ 이름에 종류가 없으면 `.json` 안을 본다 (2026-09-16).
+        #
+        #     접미를 붙이기 **전에** 쌓인 파일들은 이름이 «재학습판정» 뿐인데
+        #     `.json` 에는 종류가 들어 있다(백필). 그 행은 DB 에서 이미
+        #     kind 가 채워져 있으므로, 여기서 종류 없이 밀어넣으면 열쇠가
+        #     달라져 **두 벌이 된다.** 이름 → payload 차례로 본다.
+        if not kind and isinstance(payload, dict):
+            k = payload.get("kind")
+            kind = k if k in ("auc", "whsl", "rtl") else None
+        ok = to_db(name, verdict, ran_at, payload, _read(path), path.name,
+                   kind=kind)
         return name, ("넣음" if ok else "실패")
 
     m = _CHECK.match(stem)

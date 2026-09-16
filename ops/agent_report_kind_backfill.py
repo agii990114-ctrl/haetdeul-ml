@@ -69,10 +69,17 @@
 
 ★ **파일이 원본이다.** `.json` 의 다른 칸은 한 글자도 안 바꾼다.
 
+## 새 파일 이름 규칙 (2026-09-16~)
+
+`agent/core.py` 가 이제 종류를 **파일 이름에 박는다** —
+`2026-09-16_090908_재학습판정_whsl.txt`. 그런 파일은 되짚을 것이 없으므로
+«이미 종류가 붙어 있음» 으로 건너뛴다. 재학습검증 짝짓기 셈에도 안 넣는다.
+이 프로그램이 맡는 것은 **접미가 붙기 전에 쌓인 파일들**뿐이다.
+
 ## 두 번 돌려도 같다
 
-`.json` 은 이미 `kind` 가 있으면 건드리지 않는다. DB 는
-`payload->>'kind'` 가 비어 있는 행만 고친다.
+`.json` 은 이미 `kind` 가 있으면 건드리지 않는다. DB 는 `kind` 칸이 비고
+`payload->>'kind'` 도 비어 있는 행만 고치고, 고칠 때 **둘을 같이** 채운다.
 
 ## 쓰는 법
 
@@ -107,7 +114,13 @@ KINDS = ("auc", "whsl", "rtl")
 LABEL_TO_KIND = {"경락가": "auc", "중도매가": "whsl", "소매가": "rtl"}
 
 #: 보고서 파일 이름 — `2026-09-16_090905_재학습검증.txt`
-FNAME = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{6})_(재학습판정|재학습검증)$")
+#:
+#: ★ 2026-09-16 부터는 뒤에 종류가 붙는다 (`…_재학습검증_whsl.txt`).
+#:   그런 파일은 **이미 종류를 알고 있으므로 채울 것이 없다.** 여기서
+#:   받아들이되(모양을 못 알아보고 조용히 빠지면 안 되니) `plan()` 이
+#:   «이미 종류가 붙어 있음» 으로 건너뛴다.
+FNAME = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})_(\d{6})_(재학습판정|재학습검증)(?:_(auc|whsl|rtl))?$")
 #: 제목 맨 앞의 종류 — "auc 무 — 1주 연속 …"
 TITLE_KIND = re.compile(r"^(auc|whsl|rtl)\b")
 #: 로그의 «[경락가] 도는 중 …»
@@ -192,15 +205,20 @@ def built_kinds(day: str) -> tuple[list[tuple[str, str]], str]:
 def plan() -> tuple[list[dict], list[tuple[str, str]]]:
     """(채울 것, 건너뛴 것) 을 돌려준다. **아무것도 안 쓴다.**"""
     days: dict[str, dict[str, list[Path]]] = {}
+    fill: list[dict] = []
+    skip: list[tuple[str, str]] = []
+
     for p in sorted(LOGS.glob("*.txt")):
         m = FNAME.match(p.stem)
         if not m:
             continue
-        day, hms, name = m.groups()
+        day, hms, name, tail = m.groups()
+        if tail:
+            #   ★ 파일 이름이 이미 종류를 말한다 (2026-09-16 이후 규칙).
+            #     채울 것이 없고, 짝짓기 셈에도 넣지 않는다.
+            skip.append((p.name, f"파일 이름에 종류가 이미 붙어 있음 ({tail}) — 채울 것 없음"))
+            continue
         days.setdefault(day, {"재학습판정": [], "재학습검증": []})[name].append(p)
-
-    fill: list[dict] = []
-    skip: list[tuple[str, str]] = []
 
     for day in sorted(days):
         #   ── 판정: 보고서가 스스로 말한다 ──────────────────────
@@ -275,9 +293,14 @@ def write_db(rows: list[dict]) -> dict:
                 m = FNAME.match(r["path"].stem)
                 ran_at = datetime.datetime.strptime(
                     f"{m.group(1)}_{m.group(2)}", "%Y-%m-%d_%H%M%S")
+                #   ★ 종류가 아직 안 붙은 행만 본다 (2026-09-16). 이제
+                #     (이름 · 시각)에 여러 행이 있을 수 있다 — 같은 초에
+                #     저장된 다른 종류다. 그건 이미 이름표가 있으므로
+                #     여기서 건드릴 것이 아니다.
                 cur.execute(
                     "SELECT payload IS NULL, payload->>'kind'"
-                    "  FROM agent_report WHERE name = %s AND ran_at = %s",
+                    "  FROM agent_report WHERE name = %s AND ran_at = %s"
+                    "   AND COALESCE(kind, '') = ''",
                     (r["name"], ran_at))
                 hit = cur.fetchone()
                 if not hit:
@@ -291,15 +314,20 @@ def write_db(rows: list[dict]) -> dict:
                     continue
                 cur.execute(
                     "UPDATE agent_report"
-                    "   SET payload = jsonb_set(payload, '{kind}', to_jsonb(%s::text))"
+                    #   ★ 칸과 payload 를 **같이** 채운다 (2026-09-16).
+                    #     한쪽만 채우면 «칸은 비었는데 글에는 있다» 가 되어
+                    #     검증 [3] 이 어긋남으로 잡는다.
+                    "   SET kind = %s,"
+                    "       payload = jsonb_set(payload, '{kind}', to_jsonb(%s::text))"
                     #   ★ `payload->'kind'` 가 아니라 `->>` 로 본다.
                     #     `{"kind": null}` 이면 `->` 는 «JSON 널» 이라
                     #     SQL 의 IS NULL 에 안 걸린다. `->>` 는 걸린다.
                     #     위 검사(hit[1])와 같은 잣대를 써야 한다 —
                     #     둘이 다르면 «고칠 것» 으로 세고 0건을 고친다.
                     " WHERE name = %s AND ran_at = %s"
+                    "   AND COALESCE(kind, '') = ''"
                     "   AND payload ->> 'kind' IS NULL",
-                    (r["kind"], r["name"], ran_at))
+                    (r["kind"], r["kind"], r["name"], ran_at))
                 tally["고침"] += cur.rowcount
         c.commit()
     return tally

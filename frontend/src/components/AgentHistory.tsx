@@ -18,6 +18,19 @@ import { Verdict } from "./AgentPanel";
 import * as api from "@/lib/api";
 import type { HistoryDay, HistoryItem } from "@/lib/types";
 
+/**
+ * 가격 종류를 사람 말로. 재학습 보고서만 갖는다 (2026-09-16~).
+ *
+ * ★ 이름 옆에 **따로** 붙인다. 파일 이름은 `…_재학습판정_whsl.txt` 지만
+ *   «재학습판정_whsl» 은 도우미 이름이 아니다. 이름에 붙여 버리면
+ *   도우미가 여섯 개인 것처럼 보인다.
+ */
+const KIND_LABEL: Record<string, string> = {
+  auc: "경락가",
+  whsl: "중도매가",
+  rtl: "소매가",
+};
+
 function Body({ file, isMarkdown }: { file: string; isMarkdown: boolean }) {
   const [text, setText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -113,7 +126,12 @@ export function AgentHistory() {
                       {r.time ?? "—"}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
-                      {r.kind}
+                      {r.name ?? r.kind}
+                      {r.price_kind && (
+                        <span className="ml-1.5 rounded bg-sunk px-1.5 py-0.5 text-[10.5px] font-normal text-muted">
+                          {KIND_LABEL[r.price_kind] ?? r.price_kind}
+                        </span>
+                      )}
                     </span>
                     {r.is_claude ? (
                       <span className="rounded bg-sky-wash px-2 py-0.5 text-[10.5px] font-semibold text-sky">
