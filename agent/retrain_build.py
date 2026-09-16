@@ -52,7 +52,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from core import Finding, Report, OK, WARN, BAD              # noqa: E402
+from core import Finding, Report, OK, WARN, BAD, log_cutover  # noqa: E402
 
 #   ★ 자기 출력을 UTF-8 로 고정한다 (2026-09-07).
 #
@@ -333,7 +333,17 @@ def judge(rep: Report, kind: str, csv: Path, cur: Path, cand: Path,
 # ─────────────────────────────────────────────────────────────────────
 #   교체 — 사람이 --apply 를 쳐야 한다
 # ─────────────────────────────────────────────────────────────────────
-def apply(kind: str, cur: Path, cand: Path) -> None:
+def apply(kind: str, cur: Path, cand: Path, actor: str = "사람") -> None:
+    """교체한다. 지금 것을 통째로 백업하고 **이름은 그대로 둔다.**
+
+    ★ 교체 사실을 `model_cutover` 에 한 행 남긴다 (2026-09-16).
+      **이름이 안 바뀌기 때문에** 남기지 않으면 나중에 «언제 무엇으로
+      바뀌었나» 를 답할 길이 없다. 실제로 09-15 소매가 교체가 그랬다 —
+      백업 폴더 이름 하나만 남았다.
+
+      `log_cutover` 는 실패해도 예외를 안 올린다. 이력을 «알리다가»
+      교체를 망치면 본말전도다.
+    """
     stamp = datetime.date.today().strftime("%Y%m%d")
     bak = cur.parent / f"{cur.name}_교체전_{stamp}"
     if bak.exists():
@@ -341,6 +351,8 @@ def apply(kind: str, cur: Path, cand: Path) -> None:
     shutil.copytree(cur, bak)
     shutil.rmtree(cur)
     shutil.copytree(cand, cur)
+    log_cutover(kind, cur.name, bak, cand, actor=actor,
+                note=f"{cand.name} -> {cur.name} (retrain_build.apply)")
     print(f"\n교체했습니다.  {cand.name} -> {cur.name}")
     print(f"되돌리려면:  rm -rf {cur} && cp -r {bak} {cur}")
     print("★ 번들 이름은 그대로입니다 — 매입 파트 필터가 정확히 일치로 걸어서 바꾸면 0건이 됩니다.")
@@ -386,7 +398,7 @@ def main() -> int:
     if not cand.exists():
         raise SystemExit(f"후보 번들이 없습니다: {cand}\n  --cand 로 지정하거나 --judge-only 를 빼세요.")
 
-    rep = Report("재학습검증")
+    rep = Report("재학습검증", kind=a.kind)        # ★ 종류를 보고서에 박는다
     table: list = []
     ok = judge(rep, a.kind, csv, cur, cand, a.eval_from, table)
     print(rep.text())

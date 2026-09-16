@@ -170,7 +170,7 @@ def judge(state: S) -> S:
     #     사람이 화면에서 누를 때만 일어나므로 낮춰도 위험하지 않다.
     streak = int(state.get("streak") or ra.STREAK)
     gap_pp = float(state.get("gap_pp") if state.get("gap_pp") is not None else ra.GAP_PP)
-    rep = Report("재학습판정")
+    rep = Report("재학습판정", kind=kind)          # ★ 종류를 보고서에 박는다
     ra.check_stale(rep, [kind])
     hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, gap_pp, streak)
     ra.verdict(rep, hits, [kind])
@@ -344,7 +344,10 @@ def apply(state: S) -> S:
     cand = KIT / str(state.get("candidate", ""))
     if not cand.exists():
         return {"note": f"후보 번들이 없습니다: {cand.name}"}
-    rb.apply(kind, cur, cand)
+    #   ★ 이 자리는 사람이 화면에서 «모델 업데이트» 를 눌렀을 때만 온다
+    #     (`ask_apply` 의 대기를 사람이 풀어야 한다). 그래서 actor 는 «사람».
+    #     교체 이력은 rb.apply 안에서 model_cutover 에 남는다.
+    rb.apply(kind, cur, cand, actor="사람")
     baks = sorted((p.name for p in KIT.glob(f"ops_{kind}_교체전_*")), reverse=True)
     return {"applied": cand.name, "backup": baks[0] if baks else ""}
 

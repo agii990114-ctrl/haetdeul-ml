@@ -52,6 +52,8 @@ for _s in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parent.parent
 KIT = ROOT / "ML" / "20260824" / "ml_train_kit_2"
+sys.path.insert(0, str(ROOT / "agent"))
+from core import bundle_info, log_cutover                     # noqa: E402
 
 LIVE = KIT / "ops_auc"                       # 실제로 쓰이는 자리
 WEAK = KIT / "ops_auc_weak_sim"              # 일부러 못하게 만든 것
@@ -109,6 +111,12 @@ def start() -> int:
         print(f"백업 만듦        {BACKUP.name}")
     shutil.move(str(LIVE), str(ASIDE))       # 지우지 않고 옆으로
     shutil.copytree(WEAK, LIVE)
+    #   ★ 시뮬레이션도 «지금 꽂힌 모델» 을 실제로 바꾼다. 되돌리는 것을
+    #     잊고 09:00 배치가 돌면 못한 모델로 예측이 나간다. 그러니 이력에
+    #     남긴다 — actor 를 보면 진짜 교체와 구분된다.
+    log_cutover("auc", LIVE.name, ASIDE, WEAK, actor="시뮬레이션",
+                note="재학습 시뮬레이션 시작 — 일부러 못한 모델을 꽂음 "
+                     "(ops/retrain_sim.py 시작)")
     print(f"진짜 모델 옮김    ops_auc -> {ASIDE.name} (학습 끝 {_end(ASIDE)})")
     print(f"못한 모델 꽂음    {WEAK.name} -> ops_auc (학습 끝 {_end(LIVE)})")
     print("\n다음을 돌리면 후보가 만들어지고 화면에 뜹니다 (1~2분).")
@@ -129,7 +137,11 @@ def restore() -> int:
             shutil.rmtree(junk)
         shutil.move(str(LIVE), str(junk))
         print(f"시뮬레이션 중 꽂혀 있던 것 -> {junk.name} (학습 끝 {_end(junk)})")
+    was = bundle_info(KIT / "ops_auc_시뮬레이션결과")
     shutil.move(str(ASIDE), str(LIVE))
+    log_cutover("auc", LIVE.name, was, LIVE, actor="시뮬레이션",
+                note="재학습 시뮬레이션 되돌리기 — 진짜 모델을 다시 꽂음 "
+                     "(ops/retrain_sim.py 되돌리기)")
     print(f"진짜 모델 되돌림  ops_auc · 학습 끝 {_end(LIVE)}")
     print("\n다음도 같이 정리해 주세요 (남아 있어도 해롭지는 않습니다).")
     print("   진행기록/agent_logs/_retrain_pending.json  기다리는 결정 기록")

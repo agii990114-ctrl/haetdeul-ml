@@ -240,7 +240,10 @@ def main() -> int:
     ap.add_argument("--save", action="store_true")
     a = ap.parse_args()
 
-    rep = Report("재학습판정")
+    #   ★ 보고서에 가격 종류를 붙인다 (2026-09-16). 하루에 종류마다 한 건씩
+    #     나오는데, 안 붙이면 저장된 보고서만 보고는 어느 것인지 못 가린다.
+    #     여러 종류를 한 번에 돌리면 «하나» 라고 말할 수 없으므로 안 붙인다.
+    rep = Report("재학습판정", kind=a.kinds[0] if len(a.kinds) == 1 else None)
     check_stale(rep, a.kinds)
     hits = check_drift(rep, a.kinds, a.min_rows, a.gap_pp, a.streak)
     verdict(rep, hits, a.kinds)

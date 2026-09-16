@@ -779,9 +779,14 @@ def retrain_rollback(kind: str = Query("auc", pattern="^(auc|whsl|rtl)$"),
         src = baks[0]
 
     cur = _KIT / rb.BUNDLE[kind]
+    #   ★ 지금 꽂힌 것을 **지우기 전에** 읽어 둔다. 지운 뒤에는 못 읽는다.
+    from core import bundle_info, log_cutover                # noqa: PLC0415
+    was = bundle_info(cur)
     if cur.exists():
         shutil.rmtree(cur)
     shutil.copytree(src, cur)
+    log_cutover(kind, cur.name, was, src, actor="되돌리기",
+                note=f"{src.name} 로 되돌림 (화면 /retrain/rollback)")
     return {"restored": src.name, "kind": kind}
 
 
@@ -907,6 +912,66 @@ def _last_verify(kind: str) -> dict | None:
             "eval_from": res.get("eval_from"), "items": items}
 
 
+#: 화면에 보이는 세 모델. **이름은 교체해도 안 바뀐다** (매입 파트 필터가
+#: 정확히 일치라 바꾸면 저쪽이 0건이 된다 — CLAUDE.md §5.11).
+_LIVE_BUNDLE = (("AUC", "ops_auc"), ("WHSL", "ops_whsl"), ("RTL", "ops_rtl"))
+
+
+def _current_models() -> list:
+    """지금 꽂혀 있는 모델 셋과 «마지막으로 언제 바뀌었나».
+
+    ★ **이름으로는 못 가린다.** `ops_rtl` 은 09-15 에 통째로 바뀌었는데
+      이름은 그대로다. 그래서 정체를 «만든 날(created_at) + 학습 끝
+      (train_end)» 로 말한다.
+
+    출처 두 곳
+        파일   ML/20260824/ml_train_kit_2/ops_*/meta.json   ← 지금 꽂힌 것
+        표     model_cutover 의 종류별 마지막 행            ← 언제 바뀌었나
+
+    ★ **어느 쪽이 없어도 안 죽는다.** 못 읽은 칸은 null 로 둔다.
+      화면이 «모름» 과 «없음» 을 구분할 수 있어야 한다.
+    """
+    import json as _json                                     # noqa: PLC0415
+    out = []
+    for kind, ver in _LIVE_BUNDLE:
+        row = {"kind": kind, "model_ver": ver, "train_end": None,
+               "created_at": None, "last_swapped_at": None,
+               #   ★ 세 가지가 다른 뜻이다. 섞으면 안 된다.
+               #     true   시각까지 안다
+               #     false  날짜만 안다 — `last_swapped_at` 의 00:00 은
+               #            «자정» 이 아니라 «모름» 이다. 화면은 날짜만 그려라
+               #     null   교체 기록 자체가 없다
+               "last_swap_time_known": None,
+               "last_swap_note": None}
+        try:
+            m = _json.loads((_KIT / ver / "meta.json").read_text(encoding="utf-8"))
+            row["train_end"] = m.get("train_end")
+            row["created_at"] = m.get("created_at")
+        except Exception:                                    # noqa: BLE001
+            pass                    # 번들이 없거나 meta 가 깨졌다 — null 로 둔다
+        out.append(row)
+
+    try:
+        _agent_path()
+        from core import db                                  # noqa: PLC0415
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT ON (kind) kind, swapped_at, time_known, note"
+                    "  FROM model_cutover ORDER BY kind, swapped_at DESC")
+                last = {r[0]: r for r in cur.fetchall()}
+        for row in out:
+            hit = last.get(row["kind"])
+            if not hit:
+                continue
+            row["last_swapped_at"] = hit[1].strftime("%Y-%m-%dT%H:%M:%S") if hit[1] else None
+            row["last_swap_time_known"] = bool(hit[2])
+            row["last_swap_note"] = hit[3]
+    except Exception:                                        # noqa: BLE001
+        pass                        # 표가 아직 없다 — 교체 시각만 null 이다
+    return out
+
+
 @app.get("/retrain/pending")
 def retrain_pending():
     """**사람이 눌러야 할 결정이 있나.** 화면이 탭을 띄울지 정하는 데 쓴다.
@@ -932,11 +997,13 @@ def retrain_pending():
     f = ROOT / "진행기록" / "agent_logs" / "_retrain_pending.json"
     if not f.exists():
         #   ★ «아직 한 번도 안 돌았다» 와 «돌았는데 없다» 는 다르다.
-        return {"at": None, "pending": [], "ran": False}
+        return {"at": None, "pending": [], "ran": False,
+                "current_models": _current_models()}
     try:
         d = _json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        return {"at": None, "pending": [], "ran": False, "error": str(e)}
+        return {"at": None, "pending": [], "ran": False, "error": str(e),
+                "current_models": _current_models()}
 
     live = []
     for row in d.get("pending", []):
@@ -952,7 +1019,10 @@ def retrain_pending():
             continue
         if "바꿀까요" in asking:
             live.append(row)
-    return {"at": d.get("at"), "pending": live, "ran": True}
+    #   ★ «바꿀 것이 있나» 와 «지금 무엇이 꽂혀 있나» 는 다른 물음이다.
+    #     바꿀 것이 없어도 화면은 현재 모델을 보여줘야 한다.
+    return {"at": d.get("at"), "pending": live, "ran": True,
+            "current_models": _current_models()}
 
 
 @app.get("/retrain/graph/status")
