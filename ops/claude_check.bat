@@ -83,6 +83,14 @@ if exist "%OUTDIR%\%TODAY%_claude_check_en.md" (
   echo [경고] 영어 초안이 없습니다 - 번역을 건너뜁니다 >> "%LOG%"
 )
 
+REM  ── DB 에도 사본을 둔다 ────────────────────────────────────────
+REM  보고서는 우리 PC 의 파일로만 있어서 팀 채팅 쪽 서버가 못 읽는다.
+REM  도우미 보고서는 저장할 때 알아서 들어가고, 여기서 넣는 것은 이 AI
+REM  점검 보고서다 (도우미 뼈대를 안 거치고 Claude 가 직접 쓴 파일이라).
+REM  실패해도 배치를 세우지 않는다 - 사본을 못 둔 것뿐이고 파일은 남았다.
+echo [to_db] %date% %time% >> "%LOG%"
+python "%~dp0agent_log_to_db.py" --day %TODAY% >> "%LOG%" 2>&1
+
 echo [end] %date% %time%  exit=%RC% >> "%LOG%"
 
 REM  종료코드가 0 이어도 결과 파일이 없으면 실패로 본다.

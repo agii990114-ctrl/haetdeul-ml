@@ -80,6 +80,39 @@ def db(service: bool = False):
     return psycopg.connect(url)
 
 
+def to_db(name: str, verdict: str | None, ran_at, payload, body: str,
+          source_file: str = "") -> bool:
+    """보고서 한 벌을 `agent_report` 에 남긴다. **실패해도 조용히 넘어간다.**
+
+    ★ **여기서 절대 예외를 올리지 않는다.** 이 함수는 배치 한복판에서 불린다.
+      보고서를 «알리다가» 배치를 죽이면 본말전도다. 그래서 DB 가 없든,
+      표가 없든, 열쇠가 틀렸든 False 를 돌려주고 끝낸다. 파일은 이미 남았다.
+
+    ★ **시각은 한국 시간 그대로 넣는다.** `ran_at` 은 파일 이름에 박힌 값과
+      같은 값이다. DB 시계가 UTC 라(9절) 시간대 있는 칸에 넣으면 9시간
+      밀린다. 표의 `ran_at` 을 시간대 없는 칸으로 둔 이유다.
+
+    같은 (이름 · 시각)이 이미 있으면 덮지 않고 넘어간다 — 과거 파일을
+    다시 밀어 넣어도 두 벌이 되지 않는다.
+    """
+    try:
+        import json as _json                                 # noqa: PLC0415
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_report"
+                    " (name, verdict, ran_at, payload, body, source_file)"
+                    " VALUES (%s, %s, %s, %s::jsonb, %s, %s)"
+                    " ON CONFLICT (name, ran_at) DO NOTHING",
+                    (name, verdict, ran_at,
+                     _json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+                     body, source_file or None))
+            conn.commit()
+        return True
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
 @dataclass
 class Finding:
     """점검 하나의 결과.
@@ -142,6 +175,12 @@ class Report:
         왜 둘 다인가 — 전에는 `.txt` 만 남겼다. 그래서 화면이 저장된
         보고서를 **글자 덩어리로만** 보일 수 있었고, 방금 돌린 것과
         모양이 달랐다. 같은 내용인데 두 가지로 보이면 사람이 헷갈린다.
+
+        ★ **DB 에도 한 벌 넣는다** (2026-09-16 · `agent_report`).
+          파일은 우리 PC 에만 있어서 팀 채팅 쪽 서버가 못 읽는다.
+          «오늘 데이터 처리 잘 됐어?» 에 답하려면 저쪽이 같은 내용을
+          읽을 수 있어야 한다. **파일이 원본이고 DB 는 사본이다** —
+          DB 가 죽어도 여기서 예외가 새어 나가지 않는다.
         """
         from dataclasses import asdict                       # noqa: PLC0415
         import json as _json                                 # noqa: PLC0415
@@ -150,19 +189,22 @@ class Report:
         d.mkdir(parents=True, exist_ok=True)
         stem = f"{self.started.strftime('%Y-%m-%d_%H%M%S')}_{self.name}"
         p = d / f"{stem}.txt"
-        io.open(p, "w", encoding="utf-8").write(self.text())
+        body = self.text()
+        io.open(p, "w", encoding="utf-8").write(body)
+        payload = {
+            "name": self.name,
+            "verdict": self.worst,
+            "at": self.started.strftime("%Y-%m-%d %H:%M:%S"),
+            "findings": [asdict(f) for f in self.findings],
+        }
         #   ★ 구조 저장이 실패해도 `.txt` 는 이미 남았다. 여기서 죽어서
         #     보고서를 통째로 잃으면 본말전도다.
         try:
             io.open(d / f"{stem}.json", "w", encoding="utf-8").write(
-                _json.dumps({
-                    "name": self.name,
-                    "verdict": self.worst,
-                    "at": self.started.strftime("%Y-%m-%d %H:%M:%S"),
-                    "findings": [asdict(f) for f in self.findings],
-                }, ensure_ascii=False, indent=1))
+                _json.dumps(payload, ensure_ascii=False, indent=1))
         except Exception:                                    # noqa: BLE001
             pass
+        to_db(self.name, self.worst, self.started, payload, body, p.name)
         return p
 
 
