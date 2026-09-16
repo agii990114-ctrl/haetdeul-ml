@@ -142,6 +142,23 @@ def num(v):
     return None if v is None else float(v)
 
 
+def _ymd(s: str | None, label: str) -> str | None:
+    """`YYYY-MM-DD` 인지 확인하고 그대로 돌려준다. 빈 문자열은 «안 줬다» 로 본다.
+
+    ★ **빈 값을 «없음» 으로 봅니다.** 화면의 `<input type="date">` 는 사람이
+      달력을 지우면 `""` 를 보냅니다. 그대로 SQL 로 넘기면 날짜 변환에서
+      터집니다 — 사람은 «비웠을» 뿐인데 화면에 500 이 뜹니다.
+
+    ★ 모양만 봅니다. 「그 날이 개장일인가」 같은 것은 여기서 판단하지 않습니다.
+    """
+    if s is None or s == "":
+        return None
+    try:
+        return datetime.date.fromisoformat(s).isoformat()
+    except ValueError:
+        raise HTTPException(400, f"{label} 는 YYYY-MM-DD 여야 합니다: {s!r}")
+
+
 # ─────────────────────────────────────────────────────────── 상태
 
 @app.get("/health")
@@ -483,11 +500,29 @@ def _verdict_of(text: str) -> str | None:
 
 
 @app.get("/agent/history")
-def agent_history(limit: int = Query(120, ge=1, le=600)):
+def agent_history(limit: int | None = Query(None, ge=1, le=2000),
+                  from_: str | None = Query(None, alias="from"),
+                  to: str | None = Query(None)):
     """저장된 agent 보고서를 날짜별로 묶어 넘긴다.
 
     파일이 곧 기록이다. DB 에 또 넣지 않는다 — 두 곳에 있으면 갈라진다.
+
+    ★ **기간을 주면 그 기간만 돌려줍니다** (2026-09-16 · 양끝 포함).
+      `from`·`to` 는 `YYYY-MM-DD` 이고 **파일 이름 앞 열 글자**로 거릅니다 —
+      보고서 이름이 `2026-09-16_090908_….txt` 라 그 자체가 한국 날짜입니다.
+      파일 만든 시각(`mtime`)으로 거르지 않습니다. 옮기거나 복사하면 바뀝니다.
+
+    ★ 안 주면 **지금까지와 똑같이** 돕니다 (최근 `limit` 개). 이 API 를 이미
+      쓰고 있는 화면이 있어서, 기본 동작을 바꾸면 그쪽이 조용히 달라집니다.
+
+    ★ `limit` 은 **상한으로만** 씁니다. 기간을 주면 기본 상한을 넉넉히
+      올립니다 — 5일치를 달라고 했는데 120개에서 잘리면 «기록이 없다» 로
+      잘못 읽힙니다.
     """
+    from_ = _ymd(from_, "from")
+    to = _ymd(to, "to")
+    ranged = bool(from_ or to)
+    cap = limit if limit is not None else (2000 if ranged else 120)
     if not AGENT_DIR.exists():
         return {"dates": []}
     #   ★ **거른 다음에 자른다.** 전에는 자르고 나서 걸렀다.
@@ -496,8 +531,13 @@ def agent_history(limit: int = Query(120, ge=1, le=600)):
     #     두 배가 됐다. `.json` 은 여기서 걸러지지만 **자르는 자리는 이미
     #     차지한 뒤**라, 화면에 보이는 기록이 조용히 반토막 났다.
     #     새 보고서를 남겨도 목록이 안 늘어 «저장이 안 됐나» 로 보였다.
+    #   기간도 **자르기 전에** 겁니다 — 위와 같은 이유입니다.
+    def _in_range(name: str) -> bool:
+        d = name[:10]
+        return (from_ is None or d >= from_) and (to is None or d <= to)
+
     files = [p for p in sorted(AGENT_DIR.iterdir(), reverse=True)
-             if p.is_file() and _NAME_RE.match(p.name)][:limit]
+             if p.is_file() and _NAME_RE.match(p.name) and _in_range(p.name)][:cap]
     out: dict = {}
     for p in files:
         stem = p.stem
@@ -570,11 +610,37 @@ def agent_report(file: str):
 # ─────────────────────────────────────────────────────────── 배치
 
 @app.get("/batch/recent")
-def batch_recent(limit: int = Query(15, ge=1, le=100)):
+def batch_recent(limit: int | None = Query(None, ge=1, le=1000),
+                 from_: str | None = Query(None, alias="from"),
+                 to: str | None = Query(None)):
+    """최근 배치 실행 목록.
+
+    ★ **기간을 주면 그 기간만 돌려줍니다** (2026-09-16 · 양끝 포함).
+
+    ★ `batch_run.started_at` 은 **UTC 로 담깁니다.** 그냥 `::date` 로 자르면
+      한국 아침 09:00 배치가 UTC 00:00 이라 **그날 첫 배치가 자꾸 경계에
+      걸립니다.** 한국 시간으로 옮긴 뒤 날짜를 봅니다 —
+      `(started_at AT TIME ZONE 'Asia/Seoul')::date`.
+      (9절 «배치를 09:00 전에 돌리면 기준일이 하루 밀린다» 와 같은 함정입니다.)
+
+    ★ 안 주면 지금까지와 똑같이 최근 15건입니다. `limit` 은 상한으로만 씁니다.
+    """
+    from_ = _ymd(from_, "from")
+    to = _ymd(to, "to")
+    ranged = bool(from_ or to)
+    cap = limit if limit is not None else (1000 if ranged else 15)
+    where, args = "", []
+    if from_:
+        where += " AND (started_at AT TIME ZONE 'Asia/Seoul')::date >= %s"
+        args.append(from_)
+    if to:
+        where += " AND (started_at AT TIME ZONE 'Asia/Seoul')::date <= %s"
+        args.append(to)
     with db() as c, c.cursor() as cur:
         cur.execute("SELECT run_id, started_at, finished_at, status, host, "
                     "       stages_plan, n_ok, n_fail, note "
-                    "  FROM batch_run ORDER BY run_id DESC LIMIT %s", (limit,))
+                    "  FROM batch_run WHERE TRUE" + where +
+                    " ORDER BY run_id DESC LIMIT %s", (*args, cap))
         runs = rows(cur)
         ids = [r["run_id"] for r in runs]
         stages: dict = {}
