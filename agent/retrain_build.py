@@ -72,6 +72,7 @@ KIT = ROOT / "ML" / "20260824" / "ml_train_kit_2"
 sys.path.insert(0, str(KIT))
 
 BUNDLE = {"auc": "ops_auc", "whsl": "ops_whsl", "rtl": "ops_rtl"}
+LABEL = {"auc": "경락가", "whsl": "중도매가", "rtl": "소매가"}
 
 #: 견주는 창의 시작. 2026 은 봉인이 아니고 이미 여러 번 잰 구간입니다.
 EVAL_FROM = "2026-01-01"
@@ -166,6 +167,98 @@ def dump_csv(dest: Path) -> Path:
                 n += len(chunk)
     print(f"  학습표를 뽑았습니다: {dest.name} · {n:,}행 · {len(cols)}열")
     return dest
+
+
+# ─────────────────────────────────────────────────────────────────────
+#   후보를 만들기 **전에** — 만들어 봐야 같은 것이면 만들지 않는다
+#
+#   ★ 2026-09-16. 후보의 학습 끝은 «견주는 창 하루 전» 로 **고정**입니다
+#     (`EVAL_FROM` 이 2026-01-01 이니 늘 2025-12-31). 그런데 09-15 저녁에
+#     소매가 운영 모델이 **바로 그 2025-12-31 까지 학습된 것**으로 교체됐습니다.
+#
+#     그러면 매일 **현행과 똑같은 모델**을 새로 학습해 자기 자신과 견줍니다.
+#     실제로 09-16 소매가 검증이 세 품목 모두 WMAPE 가 소수점까지 같아
+#     «판정 불가» 가 나왔습니다. 그건 모델이 이상해서가 아니라 **견줄 것이
+#     없어서**였는데, 그 말이 어디에도 안 적혀 있었습니다.
+#
+#     ★ 그냥 낭비가 아닙니다. 소매가가 진짜 나빠져도 이 점검은 영원히
+#       «판정 불가» 를 냅니다 — **고장을 못 잡는 검사**가 됩니다.
+#
+#     그래서 **만들기 전에** 현행 `meta.json` 의 `train_end` 를 보고,
+#     이미 그 날짜까지 배웠으면 건너뜁니다. 경락가(현행 2023-12-31)는
+#     지금처럼 후보를 만들어 견줍니다 — 이 검사에 안 걸립니다.
+# ─────────────────────────────────────────────────────────────────────
+def cand_train_end(eval_from: str) -> str:
+    """후보의 학습 끝. 견주는 창 하루 전이다."""
+    return (datetime.date.fromisoformat(eval_from)
+            - datetime.timedelta(days=1)).isoformat()
+
+
+def up_to_date(cur_meta: dict, end: str) -> str | None:
+    """현행이 이미 `end` 까지(혹은 그보다 더) 배웠나. 그렇다면 그 날짜를 준다.
+
+    ★ **못 읽으면 None 입니다** — 즉 «지금까지 하던 대로 후보를 만든다».
+      읽을 수 없는 것을 «최신이겠지» 로 넘기면 점검이 조용히 멈춥니다.
+      건너뛰는 쪽이 아니라 **하던 쪽**이 안전한 기본값입니다.
+    """
+    raw = cur_meta.get("train_end")
+    if not raw:
+        return None
+    try:
+        cur_end = datetime.date.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return str(raw) if cur_end >= datetime.date.fromisoformat(end) else None
+
+
+def skip_report(kind: str, cur_end: str, cand_end: str, eval_from: str) -> Report:
+    """«건너뜀» 보고서. **«판정 불가» 가 아니라 «건너뜀» 이라고 적는다.**
+
+    ★ 제목에 **«건너뜀»** 이 들어갑니다. 판정은 `정상`(OK)이지만, 그것만
+      보면 사람이 «문제 없음» 으로 읽습니다. 둘은 다릅니다 —
+      **잰 것이 아니라 안 잰 것**입니다.
+    """
+    rep = Report("재학습검증", kind=kind)
+    rep.add(Finding(
+        OK,
+        #   ★ 앞에 **«건너뜀»** 을 붙입니다. 판정은 `정상`이라 그것만 보면
+        #     사람이 «문제 없음» 으로 읽습니다. 한 낱말로 갈라 둡니다.
+        f"[건너뜀] {LABEL.get(kind, kind)} — 현행이 이미 {cur_end} 까지 학습했습니다 · "
+        "견줄 새 후보가 없어 재학습 점검을 건너뜁니다",
+        "후보는 늘 «견주는 창 하루 전»(%s)까지 학습합니다. 현행이 이미 거기까지\n"
+        "배웠으므로, 만들어 봐야 **현행과 똑같은 모델**입니다.\n"
+        "★ 그래서 이 보고서는 «괜찮다» 가 아니라 «안 쟀다» 입니다.\n"
+        "  새 후보가 생기려면 견주는 창(%s)을 뒤로 옮기거나, 현행보다 더\n"
+        "  최근까지 배운 후보를 따로 만들어 --cand 로 주어야 합니다." % (cand_end, eval_from),
+        [("현행 학습 끝", cur_end),
+         ("후보가 됐을 학습 끝", cand_end),
+         ("견주는 창", f"{eval_from} ~"),
+         ("한 일", "후보를 만들지 않았습니다 (학습 안 함)")]))
+    return rep
+
+
+def result_json(dest: Path, kind: str, candidate: str, eval_from: str,
+                passed: bool, rep: Report, items: list, skipped: bool = False) -> None:
+    """화면·그래프가 읽는 결과 파일. **건너뜀도 같은 모양으로 남긴다.**
+
+    ★ 모양을 바꾸면 화면(3100)과 채팅이 깨집니다. `skipped` 한 칸만 더합니다 —
+      읽는 쪽이 모르는 칸은 그냥 무시합니다.
+    """
+    from dataclasses import asdict                           # noqa: PLC0415
+    dest.write_text(json.dumps({
+        "kind": kind,
+        "candidate": candidate,
+        "eval_from": eval_from,
+        "passed": passed,
+        #   ★ «건너뛰었나». 없으면 거짓으로 읽으면 된다.
+        "skipped": skipped,
+        "verdict": rep.worst,
+        "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
+        #   ★ 화면이 표로 그리는 자리. 글(findings)과 따로 둡니다 —
+        #     문장을 파싱해 숫자를 뽑으면 문장을 고칠 때마다 화면이 깨집니다.
+        "items": items,
+        "findings": [asdict(f) for f in rep.findings],
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -388,8 +481,21 @@ def main() -> int:
 
     #   후보 만들기 — 학습을 견주는 창 **앞에서** 끊는다
     if not a.judge_only and not a.cand:
-        end = (datetime.date.fromisoformat(a.eval_from)
-               - datetime.timedelta(days=1)).isoformat()
+        end = cand_train_end(a.eval_from)
+
+        #   ★ 만들기 **전에** 건너뛴다 (2026-09-16 · 위 머리말 참조).
+        #     현행이 이미 그 날짜까지 배웠으면 후보는 현행의 복사본이다.
+        cur_end = up_to_date(cur_meta, end)
+        if cur_end:
+            rep = skip_report(a.kind, cur_end, end, a.eval_from)
+            print(rep.text())
+            if a.save:
+                print("기록:", rep.save())
+            if a.json:
+                result_json(Path(a.json), a.kind, "", a.eval_from,
+                            False, rep, [], skipped=True)
+            return 0
+
         print(f"후보를 만듭니다. 학습 끝 {end} (견주는 창 {a.eval_from} 하루 전)")
         train_csv = csv or dump_csv(
             KIT / f"train_{datetime.date.today().strftime('%Y%m%d')}.csv")
@@ -405,19 +511,7 @@ def main() -> int:
     if a.save:
         print("기록:", rep.save())
     if a.json:
-        from dataclasses import asdict
-        Path(a.json).write_text(json.dumps({
-            "kind": a.kind,
-            "candidate": cand.name,
-            "eval_from": a.eval_from,
-            "passed": ok,
-            "verdict": rep.worst,
-            "at": rep.started.strftime("%Y-%m-%d %H:%M:%S"),
-            #   ★ 화면이 표로 그리는 자리. 글(findings)과 따로 둡니다 —
-            #     문장을 파싱해 숫자를 뽑으면 문장을 고칠 때마다 화면이 깨집니다.
-            "items": table,
-            "findings": [asdict(f) for f in rep.findings],
-        }, ensure_ascii=False, indent=1), encoding="utf-8")
+        result_json(Path(a.json), a.kind, cand.name, a.eval_from, ok, rep, table)
 
     if a.apply:
         if not ok:

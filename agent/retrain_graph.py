@@ -120,6 +120,10 @@ class S(TypedDict, total=False):
     candidate: str               # 후보 번들 이름
     build_ok: bool
     build_tail: str
+    #   ★ 후보를 **안 만들었다** — 현행이 이미 그 날짜까지 배웠다 (2026-09-16).
+    #     «못 만들었다» 와 다르다. 견줄 것이 없어 점검을 건너뛴 것이고,
+    #     그 사실은 `재학습검증` 보고서에 «건너뜀» 으로 남는다.
+    skipped: bool
     #   verify
     passed: bool
     #   시험용으로 문턱을 낮출 때만 채운다 (안 주면 평소 값)
@@ -203,17 +207,42 @@ def build(state: S) -> S:
     """후보를 만들고 **바로 검증까지** 한다 (retrain_build 가 둘을 같이 한다).
 
     ★ 현행과 똑같은 조리법으로, 학습 끝 날짜만 견주는 창 앞으로 당긴다.
+
+    ★ **안 만들고 끝날 수 있다** (2026-09-16). 현행이 이미 후보의 학습 끝까지
+      배웠으면 `retrain_build` 가 «건너뜀» 보고서만 남기고 돌아온다. 그때는
+      견줄 것도 지울 것도 없으므로 여기서 흐름이 끝난다.
     """
     kind = state.get("kind", "auc")
     ok, tail = _run([sys.executable, str(AGENT / "retrain_build.py"),
                      "--kind", kind, "--save", "--json", str(RESULT_JSON)])
-    cand = ""
+    cand, skipped, note = "", False, ""
     if RESULT_JSON.exists():
         try:
-            cand = json.loads(RESULT_JSON.read_text(encoding="utf-8")).get("candidate", "")
+            res = json.loads(RESULT_JSON.read_text(encoding="utf-8"))
+            cand = res.get("candidate", "")
+            #   ★ 이 결과가 **이번 것인가**를 종류로 확인한다. 옛 파일이
+            #     남아 있는데 이번 실행이 죽었으면 남의 결과를 읽게 된다.
+            #     `ok` 도 같이 본다 — 죽은 실행을 «건너뛰었다» 로 적으면
+            #     실패가 조용해진다.
+            if ok and res.get("kind") == kind and res.get("skipped"):
+                skipped = True
+                got = {k: v for f in (res.get("findings") or [])
+                       for k, v in (f.get("numbers") or [])}
+                note = (f"현행이 이미 {got.get('현행 학습 끝', '?')} 까지 학습했습니다 — "
+                        "후보를 만들지 않았습니다 (건너뜀).")
         except (OSError, ValueError):
             pass
-    return {"build_ok": ok, "build_tail": tail[-3000:], "candidate": cand}
+    out = {"build_ok": ok, "build_tail": tail[-3000:], "candidate": cand,
+           #   ★ 매번 꺼 둔다. 상태는 **한 실이 계속 이어받으므로**, 안 끄면
+           #     어제 «건너뜀» 이 아니었던 것이 오늘까지 참으로 남는다.
+           "skipped": False}
+    if skipped:
+        #   ★ 지난 실행이 남긴 견주기 결과를 **지운다.** 안 지우면 화면이
+        #     «건너뜀» 과 어제의 «후보가 못해서 지웠습니다» 를 나란히 보인다.
+        #     오늘 견준 것은 없다 — 없다고 보여야 한다.
+        out.update(skipped=True, note=note, stopped_at="build",
+                   passed=False, verify_text="", verify_items=[], discarded="")
+    return out
 
 
 def _items_from_findings(res: dict) -> list:
@@ -352,6 +381,16 @@ def apply(state: S) -> S:
     return {"applied": cand.name, "backup": baks[0] if baks else ""}
 
 
+def after_build(state: S) -> Literal["verify", "__end__"]:
+    """★ 후보를 **안 만들었으면** 견주지 않는다 (2026-09-16).
+
+    `verify` 로 보내면 «못 통과» 로 읽혀 `discard` 가 돌고, 화면에는
+    «후보가 못해서 지웠습니다» 가 뜬다. **그건 사실이 아니다** —
+    만든 적이 없다. 여기서 바로 끝낸다.
+    """
+    return END if state.get("skipped") else "verify"
+
+
 def after_judge(state: S) -> Literal["build", "__end__"]:
     """★ 사람을 안 기다리고 바로 만든다 (2026-09-09).
 
@@ -378,7 +417,7 @@ def make_graph(saver):
     g.add_edge(START, "judge")
     g.add_conditional_edges("judge", after_judge, ["build", END])
     #   ask_build · ask_apply 는 Command 로 스스로 다음을 정한다
-    g.add_edge("build", "verify")
+    g.add_conditional_edges("build", after_build, ["verify", END])
     g.add_conditional_edges("verify", after_verify, ["ask_apply", "discard"])
     g.add_edge("discard", END)
     g.add_edge("apply", END)
@@ -446,8 +485,8 @@ def main() -> int:
 
         if not show_interrupt(res):
             print("\n[끝]")
-            for k in ("verdict", "candidate", "passed", "applied", "backup",
-                      "stopped_at", "note"):
+            for k in ("verdict", "candidate", "skipped", "passed", "applied",
+                      "backup", "stopped_at", "note"):
                 if res.get(k) not in (None, ""):
                     print(f"  {k}: {res[k]}")
             if res.get("verify_text"):

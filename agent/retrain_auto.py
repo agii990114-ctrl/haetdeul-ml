@@ -135,6 +135,11 @@ def run_one(kind: str, streak: int | None = None,
                 "candidate": v.get("candidate", ""),
                 "items": v.get("verify_items") or [],
                 "verify": v.get("verify_text", "")}
+    #   ★ 후보를 **안 만들었다** — 현행이 이미 그 날짜까지 배웠다 (2026-09-16).
+    #     «지웠다» 보다 **먼저** 본다. 지운 것이 아니라 만든 적이 없다.
+    if v.get("skipped"):
+        return {"kind": kind, "state": "skipped_up_to_date", "sec": sec,
+                "note": v.get("note", "")}
     if v.get("discarded"):
         return {"kind": kind, "state": "discarded", "sec": sec,
                 "candidate": v.get("discarded", ""), "note": v.get("note", "")}
@@ -148,6 +153,9 @@ def run_one(kind: str, streak: int | None = None,
 WORD = {
     "pending": "★ 후보가 낫습니다 — 사람이 «모델 업데이트» 를 눌러야 합니다",
     "discarded": "후보가 못해서 지웠습니다",
+    #   ★ «문제 없음» 이 아니라 «안 쟀다» 입니다 — 견줄 새 후보가 없어
+    #     점검을 건너뛴 것입니다 (retrain_build.skip_report 참조).
+    "skipped_up_to_date": "현행이 최신 · 건너뜀 — 견줄 새 후보가 없습니다",
     "not_needed": "재학습이 필요하지 않습니다",
     "waiting": "이미 사람 답을 기다리는 중입니다",
     "stopped": "도중에 멈췄습니다",
