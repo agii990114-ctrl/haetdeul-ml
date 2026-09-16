@@ -55,7 +55,10 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL = "gemini-3.5-flash-lite"
+#: ★ flash-lite → flash (2026-09-16 · 사용자 지시). 번역 품질을 올려 본다.
+#:   09-09 실험은 flash-lite 로 했고 그 수치(15초 · 숫자 216개)는 그 모델 것이다.
+#:   flash 로 바꾼 뒤의 시간·품질은 내일 아침 첫 실행에서 본다.
+MODEL = "gemini-3.5-flash"
 
 
 def _key() -> str | None:
@@ -209,7 +212,7 @@ BANNER = """> ⚠ **이 보고서는 기계가 번역했습니다. 숫자 {n}개
 #     있는 숫자라 대조를 그냥 통과한다. 두 번째 실행에서는 안 나왔다.
 #
 #     그러니 «이상하다» 싶을 때 한 번에 원문을 볼 수 있어야 한다.
-FROM = """> 영어 초안을 기계(gemini-3.5-flash-lite)가 옮긴 글입니다.
+FROM = """> 영어 초안을 기계(""" + MODEL + """)가 옮긴 글입니다.
 > 이상해 보이는 문장은 원문을 보세요 — `{en}`
 
 """
