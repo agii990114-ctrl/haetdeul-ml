@@ -51,7 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core import db, Finding, Report, OK, WARN, BAD           # noqa: E402
-from drift_agent import SQL, MIN_ROWS, GAP_PP, STREAK, BASE_WEEKS   # noqa: E402
+from drift_agent import SQL, MIN_ROWS, GAP_PP, STREAK, BASE_WEEKS, SKIP_KINDS   # noqa: E402
 
 #   ★ 자기 출력을 UTF-8 로 고정한다 (2026-09-07).
 #
@@ -147,6 +147,21 @@ def check_drift(rep: Report, kinds: list[str],
     hits: list[tuple] = []
     for (kind, item), ws in sorted(series.items()):
         usable = [w for w in ws if w["n"] >= min_rows and w["gain"] is not None]
+
+        #   ★ 판정에서 빼는 계열 (2026-09-11 · drift_agent 의 SKIP_KINDS 그대로).
+        #     09-10 에 보고서(drift_agent)에서만 빼고 여기는 안 뺐다. 그래서
+        #     중도매가도 재학습 후보로 올라가 **질 수밖에 없는 후보**를 만들
+        #     수 있었다. 숫자는 적고 판정만 안 한다 — 조용히 빼지 않는다.
+        if kind in SKIP_KINDS:
+            nums = [(str(w["wk"]), "모델 %.1f%% · 앵커 %.1f%% (차 %+.1f%%p · %d행)"
+                     % (w["wmape"], w["anchor"], w["wmape"] - w["anchor"], w["n"]))
+                    for w in usable[-1:]]
+            rep.add(Finding(
+                OK, f"{kind} {item} — 판정 안 함",
+                "중도매가는 열흘 중 엿새가 어제와 값이 같아 앵커가 거의 완벽합니다.\n"
+                "밀린 것이 아니라 이길 수 없는 계열이라 재학습 후보로 안 올립니다.", nums))
+            continue
+
         need = BASE_WEEKS + streak
         if len(usable) < need:
             rep.add(Finding(OK, f"{kind} {item} — 아직 판정 못 합니다",
@@ -225,7 +240,10 @@ def main() -> int:
     ap.add_argument("--save", action="store_true")
     a = ap.parse_args()
 
-    rep = Report("재학습판정")
+    #   ★ 보고서에 가격 종류를 붙인다 (2026-09-16). 하루에 종류마다 한 건씩
+    #     나오는데, 안 붙이면 저장된 보고서만 보고는 어느 것인지 못 가린다.
+    #     여러 종류를 한 번에 돌리면 «하나» 라고 말할 수 없으므로 안 붙인다.
+    rep = Report("재학습판정", kind=a.kinds[0] if len(a.kinds) == 1 else None)
     check_stale(rep, a.kinds)
     hits = check_drift(rep, a.kinds, a.min_rows, a.gap_pp, a.streak)
     verdict(rep, hits, a.kinds)

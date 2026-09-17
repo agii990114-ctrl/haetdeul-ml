@@ -274,13 +274,27 @@ def check_null(c) -> Finding:
 
     ★ 고정 문턱을 안 쓴다. `sumRn` 62.2% 는 정상이고
       `avgTa` 0% -> 30% 는 사고다. **그 컬럼의 평소와 견준다.**
+
+    ★★ **빈 칸이 곧 값인 칸은 배치를 안 세운다** (2026-09-10).
+      ASOS 는 비가 안 오면 `sumRn` 을 빈 칸으로 준다. 우리는 그것을
+      `COALESCE("sumRn",0)` 으로 0mm 로 읽는다 (`DBEAVER_run_v5.sql:464`) —
+      **구멍이 아니라 «비가 안 왔다» 는 값이다. feature 가 빌 일이 없다.**
+
+      그런데 최근 7일을 **그전 90일**과 견주니, 장마가 지나가면 기준선이
+      낮아져 마른 주가 사고로 잡힌다. 9/3~9/10 결측률은 해마다
+      11.8%(2019) ~ 82.9%(2026) 를 오간다. **올해가 특별하지 않다.**
+
+      그래서 이런 칸은 `숫자만 적고 판정에 안 넣는다`. 수집이 진짜 끊기면
+      ①지연·③행수 검사가 잡는다 — 그때는 강수량만이 아니라 **표 전체**가
+      안 들어온다.
     """
-    cols = [("weather_asos_raw", "tm", "avgTa", "기상 평균기온"),
-            ("weather_asos_raw", "tm", "sumRn", "기상 강수량"),
-            ("auction_prices_daily", "auction_date", "unit_weight_kg", "경락 규격"),
-            ("daily_volume", "base_date", "top1_region", "반입량 1위산지")]
+    #   (테이블, 날짜칸, 칸, 이름, 빈칸이_곧_값인가)
+    cols = [("weather_asos_raw", "tm", "avgTa", "기상 평균기온", False),
+            ("weather_asos_raw", "tm", "sumRn", "기상 강수량", True),
+            ("auction_prices_daily", "auction_date", "unit_weight_kg", "경락 규격", False),
+            ("daily_volume", "base_date", "top1_region", "반입량 1위산지", False)]
     nums, bad, warn = [], [], []
-    for tbl, dcol, col, label in cols:
+    for tbl, dcol, col, label, null_is_value in cols:
         r = _one(c, f"""
           SELECT
             AVG(CASE WHEN "{col}" IS NULL THEN 1.0 ELSE 0 END)
@@ -291,6 +305,12 @@ def check_null(c) -> Finding:
         if not r or r[0] is None or r[1] is None:
             continue
         now, base = float(r[0]) * 100, float(r[1]) * 100
+        if null_is_value:
+            #   숫자는 보이되 판정에는 안 넣는다. 왜 안 넣는지도 같이 적는다 —
+            #   안 적으면 다음 사람이 «검사가 빠졌네» 하고 도로 넣는다.
+            nums.append((f"{label} 결측",
+                         f"최근7일 {now:.1f}% (평소 {base:.1f}%) · 빈 칸을 0 으로 읽는 칸이라 판정 안 함"))
+            continue
         nums.append((f"{label} 결측", f"최근7일 {now:.1f}% (평소 {base:.1f}%)"))
         #   ★ 절대 증가폭으로 본다. 평소 0.1% 가 0.3% 가 된 것은 사고가 아니다
         if now - base > 30:

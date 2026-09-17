@@ -103,7 +103,18 @@ export interface Meta {
 /** 저장된 agent 보고서 한 개. 파일이 원본이다. */
 export interface HistoryItem {
   file: string;
+  /** 도우미 이름. `name` 과 같은 값이다 — 화면이 오래 이 이름으로 읽어 와서 남겨 둔다 */
   kind: string;
+  /** 도우미 이름 (수집검사 · 데이터품질 · 재학습판정 · …) */
+  name?: string;
+  /**
+   * 가격 종류. 재학습 보고서만 갖는다 (2026-09-16~).
+   *
+   * ★ 이름과 **따로** 둔다. 파일 이름은 `…_재학습판정_whsl.txt` 지만
+   *   «재학습판정_whsl» 은 도우미 이름이 아니다. 그렇게 보이면 도우미가
+   *   하나 더 생긴 것처럼 읽힌다.
+   */
+  price_kind?: "auc" | "whsl" | "rtl" | null;
   /** "12:22:25" · Claude 일별 점검은 시각이 없어 null */
   time: string | null;
   /** 규칙 agent 만 판정을 갖는다. Claude 보고서는 null */

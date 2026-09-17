@@ -175,6 +175,33 @@ _ASOF_SQL = {
 }
 
 
+#   ★ 2026-09-11 — 설명 재료를 **예측표(`predict_input`)에서 먼저** 읽는다.
+#     전에는 학습표(`crop_price_train`)만 봤는데, 학습표는 **정답이 나온 날만**
+#     들어간다. 그래서 최근 기준일은 행이 없었고(배추 09-11 0행 · 09-10 1행),
+#     화면에서 누를 최근 예측일수록 «분해하지 못했습니다» · 값 «없음» 이 떴다.
+#     예측을 만든 입력이 예측표에 있으니 거기가 맞는 출처다.
+#     예측표에 없는 옛 기준일만 학습표로 간다.
+_SRC_TABLES = ("predict_input", "crop_price_train")
+
+
+def _input_row(c, want: list[str], base_dt: str, item: str, lead: int) -> dict:
+    """(기준일·품목·리드) 한 행의 입력값. 앞 표에 행이 있으면 거기서 끝낸다."""
+    for t in _SRC_TABLES:
+        have = {r[0] for r in c.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name=%s",
+            (t,)).fetchall()}
+        use = [x for x in want if x in have]
+        if not use:
+            continue
+        row = c.execute(
+            f"SELECT {','.join(use)} FROM {t} "
+            " WHERE base_dt=%s AND item_nm=%s AND lead_biz_d=%s",
+            (base_dt, item, lead)).fetchone()
+        if row:
+            return dict(zip(use, row))
+    return {}
+
+
 def _asof_date(c, kind: str, item: str, base_dt: str, lag1: float) -> str | None:
     try:
         rows = c.execute(_ASOF_SQL[kind], {"item": item, "bd": base_dt}).fetchall()
@@ -236,13 +263,11 @@ def explain(base_dt: str | None, item: str, kind: str, lead: int,
             KIND_ROLE[kind], nums))
 
         # ── ② 출발점이 무엇인가
-        f = c.execute(
-            f"SELECT {pre}_prc_lag1, {pre}_prc_avg7 FROM crop_price_train "
-            " WHERE base_dt=%s AND item_nm=%s AND lead_biz_d=%s",
-            (base_dt, item, lead)).fetchone()
-        if f and f[0] is not None:
-            lag1 = float(f[0])
-            avg7 = float(f[1]) if f[1] is not None else lag1
+        got = _input_row(c, [f"{pre}_prc_lag1", f"{pre}_prc_avg7"], base_dt, item, lead)
+        if got.get(f"{pre}_prc_lag1") is not None:
+            lag1 = float(got[f"{pre}_prc_lag1"])
+            a7 = got.get(f"{pre}_prc_avg7")
+            avg7 = float(a7) if a7 is not None else lag1
             calc = alpha * lag1 + (1 - alpha) * avg7
             #   ★ 2026-08-31 — 여기 원래 다섯 줄짜리 설명이 붙어 있었다.
             #     "이건 실제 거래가가 아닙니다. 어제 하루 값만 쓰면 …" 하는 글이
@@ -271,7 +296,7 @@ def explain(base_dt: str | None, item: str, kind: str, lead: int,
             rep.add(Finding(OK, f"출발점 {anchor:,.0f}{unit}", detail, nums))
         else:
             rep.add(Finding(WARN, f"출발점 {anchor:,.0f}{unit} — 분해하지 못했습니다",
-                            "학습표에 그 기준일 행이 없습니다."))
+                            "예측표·학습표 어디에도 그 기준일 행이 없습니다."))
 
         # ── ③ 모델이 얼마나 움직였나
         mv = (pred - anchor) / anchor * 100
@@ -282,26 +307,18 @@ def explain(base_dt: str | None, item: str, kind: str, lead: int,
                 [("이유", greason or "알 수 없음")]))
         else:
             rep.add(Finding(
-                OK, f"모델이 출발점에서 {mv:+.1f}% 움직였습니다",
-                ("올린다고 봤습니다." if mv > 0.5 else
-                 "내린다고 봤습니다." if mv < -0.5 else
-                 "거의 그대로라고 봤습니다."),
+                #   ★ 2026-09-11 — «올린다고 봤습니다» 한 줄을 뺐다. 제목의
+                #     +/− 가 이미 방향을 말하고, 말투가 어색하다는 지적.
+                OK, f"모델이 출발점에서 {mv:+.1f}% 움직였습니다", "",
                 [("출발점", f"{anchor:,.0f}{unit}"), ("예측", f"{pred:,.0f}{unit}"),
                  ("차이", f"{pred-anchor:+,.0f}{unit}")]))
 
         # ── ④ 그날 모델이 본 값들
         feats = list(meta.get("features") or [])
         imp = importance(kind, feats)
-        cols = [x[0] for x in c.execute(
-            "SELECT column_name FROM information_schema.columns "
-            " WHERE table_name='crop_price_train'").fetchall()]
-        use = [f for f in feats if f in cols]
+        got = _input_row(c, feats, base_dt, item, lead)
+        use = [f for f in feats if f in got]
         if use:
-            vals = c.execute(
-                f"SELECT {','.join(use)} FROM crop_price_train "
-                " WHERE base_dt=%s AND item_nm=%s AND lead_biz_d=%s",
-                (base_dt, item, lead)).fetchone()
-            got = dict(zip(use, vals)) if vals else {}
             order = sorted(use, key=lambda f: -imp.get(f, 0))[:8]
             nums = []
             for f in order:
@@ -310,9 +327,8 @@ def explain(base_dt: str | None, item: str, kind: str, lead: int,
                 tag = f" ({imp[f]:.1f}%)" if f in imp else ""
                 nums.append((nice(f) + tag, fmt(v)))
             rep.add(Finding(
-                OK, "모델이 그날 본 값 (중요한 것부터)",
-                "괄호는 모델이 그 값을 얼마나 자주 참고하는지입니다 "
-                "(그것 때문에 올랐다는 뜻은 아닙니다).", nums))
+                OK, "feature 반영률",
+                "예측에 있어 모델이 반영한 feature의 비율", nums))
 
         # ── ⑤ ★ 한계
         #

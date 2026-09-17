@@ -47,6 +47,11 @@
 
     python cutover_quantile.py --rollback
 
+★ 2026-09-16 이력 기록만 추가 · 동결 예외 승인.
+  `model_cutover` 에 교체 사실을 남기는 호출(import + 두 줄)만 더했다.
+  **예측·번들 내용에 닿는 줄은 한 줄도 안 바꿨다.** 기록에 실패해도
+  `log_cutover` 가 예외를 안 올리므로 교체 절차는 그대로 끝난다.
+
 ## 쓰는 법
 
     python cutover_quantile.py --check       # 무엇이 바뀌는지만 본다
@@ -64,6 +69,19 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PAIRS = [("ops_auc", "ops_auc_q"), ("ops_whsl", "ops_whsl_q")]
 STAMP = datetime.date.today().strftime("%Y%m%d")
+
+#   ★ 교체 이력을 남기기 위한 것뿐이다 (2026-09-16 · 동결 예외 승인).
+#     `agent/core.py` 를 못 찾아도 이 프로그램은 그대로 돌아야 한다 —
+#     교체를 «기록» 때문에 못 하게 되면 본말전도다.
+sys.path.insert(0, str(HERE.parents[2] / "agent"))
+try:
+    from core import log_cutover                             # noqa: E402
+except Exception:                                            # noqa: BLE001
+    def log_cutover(*_a, **_k) -> bool:                      # type: ignore[misc]
+        return False
+
+#: 번들 이름에서 가격 종류를 뽑는다. ops_auc -> auc
+KIND_OF = {"ops_auc": "auc", "ops_whsl": "whsl", "ops_rtl": "rtl"}
 
 
 def info(d: Path):
@@ -92,10 +110,15 @@ def main() -> int:
                 continue
             bak = baks[-1]
             cur = HERE / live
+            was = HERE / f"{live}_되돌리기전_{STAMP}"
             if cur.exists():
                 shutil.rmtree(cur / "_tmp", ignore_errors=True)
-                shutil.move(str(cur), str(HERE / f"{live}_되돌리기전_{STAMP}"))
+                shutil.move(str(cur), str(was))
             shutil.move(str(bak), str(cur))
+            log_cutover(KIND_OF.get(live, live), live,
+                        was if was.exists() else None, cur,
+                        actor="되돌리기",
+                        note=f"{bak.name} 로 되돌림 (cutover_quantile.py --rollback)")
             print(f"  {live} ← {bak.name} 로 되돌렸습니다")
             n += 1
         print(f"\n되돌린 번들 {n}개. **배치를 다시 돌려 확인하세요.**")
@@ -154,6 +177,9 @@ def main() -> int:
             shutil.rmtree(bak)
         shutil.move(str(dl), str(bak))
         shutil.copytree(str(dn), str(dl))     # 원본(_q)은 남겨 둔다
+        log_cutover(KIND_OF.get(live, live), live, bak, dn, actor="사람",
+                    note=f"{new} -> {live} 분위수 밴드 교체 "
+                         f"(cutover_quantile.py --commit)")
         print(f"  {live}  ←  {new}   (백업 {bak.name})")
     print("\n  교체 완료. **배치 predict 단계를 돌려 확인하세요.**")
     print("  되돌리려면  python cutover_quantile.py --rollback")

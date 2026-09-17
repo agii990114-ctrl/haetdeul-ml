@@ -36,10 +36,7 @@
         (후보 있음)
           │
           ▼
-        ask_build ──interrupt── 사람이 "만들자" 라고 할 때까지 멈춤
-          │
-          ▼
-        build ──(실패)──> END
+        build ──(실패)──> END      ← ★ 사람을 안 기다린다 (2026-09-09)
           │
           ▼
         verify
@@ -48,16 +45,24 @@
    통과       못 통과
      │           │
      ▼           ▼
-  ask_apply     END        ← ★ 통과 못 하면 사람에게 묻지도 않는다
+  ask_apply   discard ──> END   ← ★ 후보를 **지운다**
      │
   interrupt ── 사람이 "적용하자" 라고 할 때까지 멈춤
      │
      ▼
    apply ──> END
 
-    ★ 사람이 두 번 누릅니다. 그 사이는 자동입니다.
-      그리고 **검증을 통과 못 하면 두 번째 물음이 아예 안 나옵니다** —
-      화면에서 실수로 누를 자리를 없앤 것입니다.
+    ★ **사람은 한 번만 누릅니다** (2026-09-09 바꿈).
+
+      전에는 「후보를 만들까요」 도 물었습니다. 그런데 후보를 만드는 것은
+      운영 모델을 한 글자도 안 건드립니다 — 물어볼 이유가 없었습니다.
+      이제 판정이 「필요하다」 면 **바로 만들고 견줍니다.**
+
+      사람이 누르는 자리는 **「바꿀까요」 하나**뿐이고, 그것도 **후보가
+      현행보다 나을 때만** 나옵니다.
+
+    ★ **못 통과한 후보는 지웁니다.** 안 지우면 파일이 쌓이고, 무엇보다
+      쓸 수 없다고 판정한 것이 폴더에 남아 있으면 나중에 헷갈립니다.
 
     쓰는 법
         python agent/retrain_graph.py                 # 판정까지 (사람 대기)
@@ -72,6 +77,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -114,13 +120,24 @@ class S(TypedDict, total=False):
     candidate: str               # 후보 번들 이름
     build_ok: bool
     build_tail: str
+    #   ★ 후보를 **안 만들었다** — 현행이 이미 그 날짜까지 배웠다 (2026-09-16).
+    #     «못 만들었다» 와 다르다. 견줄 것이 없어 점검을 건너뛴 것이고,
+    #     그 사실은 `재학습검증` 보고서에 «건너뜀» 으로 남는다.
+    skipped: bool
     #   verify
     passed: bool
+    #   시험용으로 문턱을 낮출 때만 채운다 (안 주면 평소 값)
+    streak: int
+    gap_pp: float
     verify_text: str
     #   ★ 품목별 수치. **글과 따로 둡니다** — 사람이 «바꿀까요» 에
     #     답하려면 문장이 아니라 숫자를 나란히 봐야 합니다.
     #     화면이 표로 그립니다.
     verify_items: list
+    #   discard — 못 통과해서 지운 후보 이름
+    #   ★ 여기 안 적어 두면 LangGraph 가 값을 **조용히 버립니다.**
+    #     실제로 그래서 «지웠다» 가 «멈췄다» 로 보였습니다 (2026-09-09).
+    discarded: str
     #   apply
     applied: str
     backup: str
@@ -151,9 +168,15 @@ def judge(state: S) -> S:
     from core import Report                                  # noqa: PLC0415
 
     kind = state.get("kind", "auc")
-    rep = Report("재학습판정")
+    #   ★ 문턱을 밖에서 낮출 수 있게 열어 둔다. **시험용이다.**
+    #     안 주면 평소 값(drift_agent 와 같은 규칙)을 쓴다.
+    #     이걸로는 후보를 «만들어 견주기» 까지만 간다 — 바꾸는 것은
+    #     사람이 화면에서 누를 때만 일어나므로 낮춰도 위험하지 않다.
+    streak = int(state.get("streak") or ra.STREAK)
+    gap_pp = float(state.get("gap_pp") if state.get("gap_pp") is not None else ra.GAP_PP)
+    rep = Report("재학습판정", kind=kind)          # ★ 종류를 보고서에 박는다
     ra.check_stale(rep, [kind])
-    hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, ra.GAP_PP, ra.STREAK)
+    hits = ra.check_drift(rep, [kind], ra.MIN_ROWS, gap_pp, streak)
     ra.verdict(rep, hits, [kind])
     rep.save()                                               # 화면이 읽는다
 
@@ -184,17 +207,42 @@ def build(state: S) -> S:
     """후보를 만들고 **바로 검증까지** 한다 (retrain_build 가 둘을 같이 한다).
 
     ★ 현행과 똑같은 조리법으로, 학습 끝 날짜만 견주는 창 앞으로 당긴다.
+
+    ★ **안 만들고 끝날 수 있다** (2026-09-16). 현행이 이미 후보의 학습 끝까지
+      배웠으면 `retrain_build` 가 «건너뜀» 보고서만 남기고 돌아온다. 그때는
+      견줄 것도 지울 것도 없으므로 여기서 흐름이 끝난다.
     """
     kind = state.get("kind", "auc")
     ok, tail = _run([sys.executable, str(AGENT / "retrain_build.py"),
                      "--kind", kind, "--save", "--json", str(RESULT_JSON)])
-    cand = ""
+    cand, skipped, note = "", False, ""
     if RESULT_JSON.exists():
         try:
-            cand = json.loads(RESULT_JSON.read_text(encoding="utf-8")).get("candidate", "")
+            res = json.loads(RESULT_JSON.read_text(encoding="utf-8"))
+            cand = res.get("candidate", "")
+            #   ★ 이 결과가 **이번 것인가**를 종류로 확인한다. 옛 파일이
+            #     남아 있는데 이번 실행이 죽었으면 남의 결과를 읽게 된다.
+            #     `ok` 도 같이 본다 — 죽은 실행을 «건너뛰었다» 로 적으면
+            #     실패가 조용해진다.
+            if ok and res.get("kind") == kind and res.get("skipped"):
+                skipped = True
+                got = {k: v for f in (res.get("findings") or [])
+                       for k, v in (f.get("numbers") or [])}
+                note = (f"현행이 이미 {got.get('현행 학습 끝', '?')} 까지 학습했습니다 — "
+                        "후보를 만들지 않았습니다 (건너뜀).")
         except (OSError, ValueError):
             pass
-    return {"build_ok": ok, "build_tail": tail[-3000:], "candidate": cand}
+    out = {"build_ok": ok, "build_tail": tail[-3000:], "candidate": cand,
+           #   ★ 매번 꺼 둔다. 상태는 **한 실이 계속 이어받으므로**, 안 끄면
+           #     어제 «건너뜀» 이 아니었던 것이 오늘까지 참으로 남는다.
+           "skipped": False}
+    if skipped:
+        #   ★ 지난 실행이 남긴 견주기 결과를 **지운다.** 안 지우면 화면이
+        #     «건너뜀» 과 어제의 «후보가 못해서 지웠습니다» 를 나란히 보인다.
+        #     오늘 견준 것은 없다 — 없다고 보여야 한다.
+        out.update(skipped=True, note=note, stopped_at="build",
+                   passed=False, verify_text="", verify_items=[], discarded="")
+    return out
 
 
 def _items_from_findings(res: dict) -> list:
@@ -261,13 +309,41 @@ def verify(state: S) -> S:
             "verify_text": f"판정 {res.get('verdict')}\n" + "\n".join(lines)}
 
 
-def after_verify(state: S) -> Literal["ask_apply", "__end__"]:
-    """★ 통과 못 하면 **사람에게 묻지도 않는다.**
+def after_verify(state: S) -> Literal["ask_apply", "discard"]:
+    """★ 통과 못 하면 **사람에게 묻지도 않고 지운다.**
 
     화면에 버튼을 띄워 두고 서버에서 막는 것보다, 물음 자체를 안 내는 편이
     낫다. 실수로 누를 자리가 없어진다.
     """
-    return "ask_apply" if state.get("passed") else END
+    return "ask_apply" if state.get("passed") else "discard"
+
+
+def discard(state: S) -> S:
+    """못 쓴다고 판정한 후보를 지운다.
+
+    ★ **왜 지우나.** 안 지우면 매일 하나씩 쌓인다. 그리고 쓸 수 없다고
+      판정한 번들이 현행 옆에 남아 있으면, 나중에 사람이 폴더를 보고
+      «이건 뭐지» 하게 된다. 판정 결과는 보고서에 남으니 번들은 필요 없다.
+
+    ★ **현행과 백업은 절대 안 건드린다.** 이름이 `ops_{kind}_cand_…` 인
+      것만 지운다. 혹시 이름이 어긋나면 **아무것도 안 지우고** 그 사실을
+      적는다 — 지우는 일에서는 «아마 맞겠지» 가 제일 위험하다.
+    """
+    name = str(state.get("candidate", "")).strip()
+    kind = state.get("kind", "auc")
+    if not name:
+        return {"note": "지울 후보 이름이 없습니다."}
+    safe = name.startswith(f"ops_{kind}_") and "_cand" in name
+    if not safe:
+        return {"note": f"후보 이름이 규칙과 달라 안 지웠습니다: {name}"}
+    path = KIT / name
+    if not path.is_dir():
+        return {"note": f"후보 폴더가 이미 없습니다: {name}"}
+    try:
+        shutil.rmtree(path)
+    except OSError as e:
+        return {"note": f"후보를 못 지웠습니다: {name} ({e})"}
+    return {"discarded": name, "note": f"후보가 현행보다 못해 지웠습니다: {name}"}
 
 
 def ask_apply(state: S) -> Command[Literal["apply", "__end__"]]:
@@ -297,30 +373,53 @@ def apply(state: S) -> S:
     cand = KIT / str(state.get("candidate", ""))
     if not cand.exists():
         return {"note": f"후보 번들이 없습니다: {cand.name}"}
-    rb.apply(kind, cur, cand)
+    #   ★ 이 자리는 사람이 화면에서 «모델 업데이트» 를 눌렀을 때만 온다
+    #     (`ask_apply` 의 대기를 사람이 풀어야 한다). 그래서 actor 는 «사람».
+    #     교체 이력은 rb.apply 안에서 model_cutover 에 남는다.
+    rb.apply(kind, cur, cand, actor="사람")
     baks = sorted((p.name for p in KIT.glob(f"ops_{kind}_교체전_*")), reverse=True)
     return {"applied": cand.name, "backup": baks[0] if baks else ""}
 
 
-def after_judge(state: S) -> Literal["ask_build", "__end__"]:
-    return "ask_build" if state.get("candidates") else END
+def after_build(state: S) -> Literal["verify", "__end__"]:
+    """★ 후보를 **안 만들었으면** 견주지 않는다 (2026-09-16).
+
+    `verify` 로 보내면 «못 통과» 로 읽혀 `discard` 가 돌고, 화면에는
+    «후보가 못해서 지웠습니다» 가 뜬다. **그건 사실이 아니다** —
+    만든 적이 없다. 여기서 바로 끝낸다.
+    """
+    return END if state.get("skipped") else "verify"
+
+
+def after_judge(state: S) -> Literal["build", "__end__"]:
+    """★ 사람을 안 기다리고 바로 만든다 (2026-09-09).
+
+    후보를 만드는 것은 **운영 모델을 안 건드린다.** 물어볼 이유가 없었다.
+    사람이 답할 자리는 「바꿀까요」 하나로 줄였다.
+    """
+    return "build" if state.get("candidates") else END
 
 
 # ───────────────────────────────────────────────────────── 그래프
 def make_graph(saver):
     g = StateGraph(S)
     g.add_node("judge", judge)
+    #   ★ `ask_build` 는 이제 안 거칩니다. 그래도 **노드는 남겨 둡니다** —
+    #     예전 상태 파일이 이 자리에서 멈춰 있을 수 있고, 노드가 없어지면
+    #     그 파일을 못 이어받습니다. 새 흐름은 여기로 안 옵니다.
     g.add_node("ask_build", ask_build)
     g.add_node("build", build)
+    g.add_node("discard", discard)
     g.add_node("verify", verify)
     g.add_node("ask_apply", ask_apply)
     g.add_node("apply", apply)
 
     g.add_edge(START, "judge")
-    g.add_conditional_edges("judge", after_judge, ["ask_build", END])
+    g.add_conditional_edges("judge", after_judge, ["build", END])
     #   ask_build · ask_apply 는 Command 로 스스로 다음을 정한다
-    g.add_edge("build", "verify")
-    g.add_conditional_edges("verify", after_verify, ["ask_apply", END])
+    g.add_conditional_edges("build", after_build, ["verify", END])
+    g.add_conditional_edges("verify", after_verify, ["ask_apply", "discard"])
+    g.add_edge("discard", END)
     g.add_edge("apply", END)
     return g.compile(checkpointer=saver)
 
@@ -386,8 +485,8 @@ def main() -> int:
 
         if not show_interrupt(res):
             print("\n[끝]")
-            for k in ("verdict", "candidate", "passed", "applied", "backup",
-                      "stopped_at", "note"):
+            for k in ("verdict", "candidate", "skipped", "passed", "applied",
+                      "backup", "stopped_at", "note"):
                 if res.get(k) not in (None, ""):
                     print(f"  {k}: {res[k]}")
             if res.get("verify_text"):

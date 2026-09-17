@@ -643,8 +643,21 @@ def main():
     #         곁들이는 적은 순서대로 도니 이 배치로 충분하다.
     #
     #       걸리는 시간: 수집 15검색어 × 0.4초 + AI 가르기 30초쯤.
+    #
+    #   ★ 재학습을 **사람 없이** 여기까지 해 둔다 (2026-09-09).
+    #
+    #       retrain_agent   «다시 배워야 하나» 판정 보고서를 남긴다
+    #       retrain_auto    필요하면 **후보를 만들어 지금 것과 견준다**
+    #
+    #     후보가 나으면 화면에 「모델 재학습」 탭이 뜨고, 못하면 후보를
+    #     지우고 아무것도 안 알린다. **운영 모델은 여기서 안 바뀐다** —
+    #     바꾸는 것은 사람이 화면에서 누를 때만 일어난다.
+    #
+    #     ★ 전달표를 보낸 **뒤**에 둔다. 학습이 종류당 2분 반쯤 걸려서,
+    #       앞에 두면 매입 파트가 그만큼 늦게 받는다.
     after = {"push": [[PY, "push_calendar.py", "--commit"],
                       [PY, str(ROOT / "agent" / "retrain_agent.py"), "--save"],
+                      [PY, str(ROOT / "agent" / "retrain_auto.py")],
                       [PY, str(ROOT / "데이터 수집" / "뉴스" / "fetch_naver_news.py")],
                       [PY, str(ROOT / "agent" / "news_agent.py"), "--save"]]}
 
