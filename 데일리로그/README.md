@@ -76,6 +76,9 @@ and 08-22 were reconstructed from dated training kits, SQL headers and result fi
 | [09-09](daily_log_20260909_EN.md) | Wed | ML console, lead 0 and auto-retraining |
 | [09-10](daily_log_20260910_EN.md) | Thu | False alarm fixed; rerun buttons added |
 | [09-11](daily_log_20260911_EN.md) | Fri | Retrain approval bug and base date fixed |
+| [09-14](daily_log_20260914_EN.md) | Mon | Forecast Q&A agent built and reviewed |
+| [09-15](daily_log_20260915_EN.md) | Tue | Q&A agent wired to master; dates fixed |
+| [09-17](daily_log_20260917_EN.md) | Thu | Dashboard 4.6x faster; local LLM benched |
 
 ---
 
